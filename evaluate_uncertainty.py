@@ -164,11 +164,50 @@ def print_comparison(results: list[dict[str, object]], output: TextIO) -> None:
         print(" | ".join(value.ljust(width) for value, width in zip(row, widths)), file=output)
 
 
+def write_comparison_csv(
+    results: list[dict[str, object]], path: Path, simulated: bool
+) -> None:
+    """Write comparison metrics to CSV and label simulated output explicitly."""
+    columns = (
+        "threshold",
+        "review_count",
+        "review_rate",
+        "captured_errors",
+        "captured_error_rate",
+        "reviewed_error_rate",
+        "unreviewed_error_rate",
+        "data_status",
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=columns)
+        writer.writeheader()
+        for result in results:
+            writer.writerow(
+                {
+                    **result,
+                    "threshold": f"{result['threshold']:.2f}",
+                    "data_status": "SIMULATED" if simulated else "PROVIDED_DATA",
+                }
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Compare confidence thresholds against labeled CSV predictions."
     )
     parser.add_argument("csv_path", type=Path, help="input CSV file")
+    parser.add_argument(
+        "--output-csv",
+        type=Path,
+        required=True,
+        help="path for the comparison results CSV",
+    )
+    parser.add_argument(
+        "--simulated",
+        action="store_true",
+        help="mark exported results as simulated data",
+    )
     arguments = parser.parse_args()
 
     try:
@@ -177,7 +216,18 @@ def main() -> int:
         print(f"Error: {error}", file=sys.stderr)
         return 2
 
-    print_comparison(build_comparison(predictions), sys.stdout)
+    results = build_comparison(predictions)
+    try:
+        write_comparison_csv(results, arguments.output_csv, arguments.simulated)
+    except OSError as error:
+        print(f"Error writing result CSV: {error}", file=sys.stderr)
+        return 2
+
+    print_comparison(results, sys.stdout)
+    print(
+        f"Results CSV: {arguments.output_csv} "
+        f"({'SIMULATED' if arguments.simulated else 'PROVIDED_DATA'})"
+    )
     return 0
 
 
