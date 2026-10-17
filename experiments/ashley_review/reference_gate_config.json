@@ -1,0 +1,134 @@
+{
+  "purpose": "Ashley personal validation-only reference-support gate demonstration; no test rows were accessed.",
+  "created_utc": "2026-10-17T21:22:34.677424+00:00",
+  "distance": "cosine distance = 1 - cosine similarity after L2 normalization",
+  "k": 5,
+  "reference_split": "reference",
+  "query_split": "validation",
+  "threshold_rule": "flag if reference_distance > validation 95th percentile",
+  "percentile": 95,
+  "percentile_method": "NumPy percentile method='linear' (linear interpolation; NumPy default definition)",
+  "threshold": 0.16425848421562322,
+  "validation_count": 1430,
+  "flagged_count": 72,
+  "flagged_fraction": 0.05034965034965035,
+  "flagged_percent": 5.034965034965035,
+  "requested_demo_target_percent": 5.0,
+  "ties_at_threshold": 0,
+  "feature_settings": {
+    "shape": [
+      7156,
+      1024
+    ],
+    "dtype": "float32",
+    "model": "musk_large_patch16_384",
+    "checkpoint": "hf_hub:xiangjx/musk",
+    "checkpoint_sha256": "83d9f2429ec3f04fc3bdc4bc6d8e6c78035ea196fdce9fe05d76ea0e8cad0375",
+    "preprocessing": {
+      "resize": 384,
+      "interpolation_argument": 3,
+      "center_crop": 384,
+      "to_tensor": true,
+      "normalize_mean": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "normalize_std": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "image_mode": "RGB"
+    },
+    "extraction": {
+      "with_head": false,
+      "out_norm": true,
+      "ms_aug": false,
+      "return_global": true,
+      "device": "cuda",
+      "dtype": "float16",
+      "batch_size": 1,
+      "output_dtype": "float32",
+      "embedding_dimension": 1024
+    },
+    "software_versions": {
+      "python": "3.10.22",
+      "torch": "2.8.0+cu128",
+      "torchvision": "0.23.0+cu128",
+      "timm": "0.9.8",
+      "musk": "1.0.0",
+      "pillow": "12.3.0",
+      "numpy": "1.26.4"
+    }
+  },
+  "integrity": {
+    "embeddings_npy_sha256_from_personal_split_integrity_record": "00e4b443033298715bc67c86aae458ca84549a3209350f4d04639e0261261820",
+    "split_manifest_sha256": "6e1ac9303c2b4d3e9f140f71ee6176e3a07b7752d39880366a0014a57265ee90",
+    "extraction_config_sha256": "31c7ecf1b6154c3c05ee21a65b786100bf4a95c50737c92b67f256b2dbe59ab0",
+    "sha256_of_only_used_reference_then_validation_embedding_rows": "3485ca7b87ff5e4916e5d60cda01902d594689cd983efeb122c67f81b9f5d5bc"
+  },
+  "validation_flag_rates_by_label": {
+    "ADI": {
+      "total": 263,
+      "marked": 2,
+      "marked_fraction": 0.0076045627376425855,
+      "marked_percent": 0.7604562737642585
+    },
+    "BACK": {
+      "total": 169,
+      "marked": 7,
+      "marked_fraction": 0.04142011834319527,
+      "marked_percent": 4.1420118343195265
+    },
+    "DEB": {
+      "total": 68,
+      "marked": 3,
+      "marked_fraction": 0.04411764705882353,
+      "marked_percent": 4.411764705882353
+    },
+    "LYM": {
+      "total": 127,
+      "marked": 1,
+      "marked_fraction": 0.007874015748031496,
+      "marked_percent": 0.7874015748031497
+    },
+    "MUC": {
+      "total": 207,
+      "marked": 21,
+      "marked_fraction": 0.10144927536231885,
+      "marked_percent": 10.144927536231885
+    },
+    "MUS": {
+      "total": 118,
+      "marked": 4,
+      "marked_fraction": 0.03389830508474576,
+      "marked_percent": 3.389830508474576
+    },
+    "NORM": {
+      "total": 148,
+      "marked": 5,
+      "marked_fraction": 0.033783783783783786,
+      "marked_percent": 3.3783783783783785
+    },
+    "STR": {
+      "total": 84,
+      "marked": 13,
+      "marked_fraction": 0.15476190476190477,
+      "marked_percent": 15.476190476190476
+    },
+    "TUM": {
+      "total": 246,
+      "marked": 16,
+      "marked_fraction": 0.06504065040650407,
+      "marked_percent": 6.504065040650406
+    }
+  },
+  "interpretation": [
+    "The threshold targets approximately 5% flagged among this familiar validation data as a demonstration objective.",
+    "This is not a clinical standard and does not establish detection of unknown diseases.",
+    "Flagged samples are not asserted to be true OOD cases or classification errors.",
+    "No classifier predictions were generated or fabricated.",
+    "No patient-level independence is guaranteed because trusted patient/slide groups are unavailable."
+  ]
+}
