@@ -1,0 +1,85 @@
+{
+  "created_utc": "2026-10-17T19:52:15.061605+00:00",
+  "purpose": "CRC-VAL-HE-7K is external validation data. These embeddings are features only; no classifier is trained and no accuracy is reported. If used for training or tuning, reserve other data for evaluation; the full dataset must not then be called an independent test set.",
+  "dataset": {
+    "name": "CRC-VAL-HE-7K",
+    "root": "D:\\Hackathon 2026\\AshbyHackathon2026Proj\\CRC-VAL-HE-7K",
+    "source_role": "external validation data",
+    "image_count": 7156,
+    "class_counts": {
+      "ADI": 1314,
+      "BACK": 847,
+      "DEB": 339,
+      "LYM": 634,
+      "MUC": 1035,
+      "MUS": 592,
+      "NORM": 741,
+      "STR": 421,
+      "TUM": 1233
+    },
+    "ordered_manifest_sha256": "cb70cba58d30113aa410acae7a43c076847c70835bedcd054b9316c282508953",
+    "image_extensions": [
+      ".tif",
+      ".tiff"
+    ],
+    "image_order": "CLASS_NAMES order, then lexicographically sorted relative path"
+  },
+  "model": "musk_large_patch16_384",
+  "checkpoint": "hf_hub:xiangjx/musk",
+  "checkpoint_cache": "C:\\Users\\Jiayi\\.cache\\model.safetensors",
+  "checkpoint_sha256": "83d9f2429ec3f04fc3bdc4bc6d8e6c78035ea196fdce9fe05d76ea0e8cad0375",
+  "preprocessing": {
+    "resize": 384,
+    "interpolation_argument": 3,
+    "center_crop": 384,
+    "to_tensor": true,
+    "normalize_mean": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "normalize_std": [
+      0.5,
+      0.5,
+      0.5
+    ],
+    "image_mode": "RGB"
+  },
+  "extraction": {
+    "with_head": false,
+    "out_norm": true,
+    "ms_aug": false,
+    "return_global": true,
+    "device": "cuda",
+    "dtype": "float16",
+    "batch_size": 1,
+    "output_dtype": "float32",
+    "embedding_dimension": 1024
+  },
+  "sampling": {
+    "mode": "all_images",
+    "seed": null,
+    "per_class": null,
+    "classes": [
+      "ADI",
+      "BACK",
+      "DEB",
+      "LYM",
+      "MUC",
+      "MUS",
+      "NORM",
+      "STR",
+      "TUM"
+    ],
+    "order": "CLASS_NAMES order, then sorted relative image path"
+  },
+  "software_versions": {
+    "python": "3.10.22",
+    "torch": "2.8.0+cu128",
+    "torchvision": "0.23.0+cu128",
+    "timm": "0.9.8",
+    "musk": "1.0.0",
+    "pillow": "12.3.0",
+    "numpy": "1.26.4"
+  }
+}

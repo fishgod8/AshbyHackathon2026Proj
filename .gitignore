@@ -1,0 +1,49 @@
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Python caches and compiled files
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Local Python environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local datasets and generated outputs
+data/
+datasets/
+outputs/
+results/
+*.log
+CRC-VAL-HE-7K/
+
+# Model weights and exported models
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.h5
+*.keras
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Only the final CRC MUSK feature handoff may be committed.
+features/*
+!features/crc_val_musk/
+features/crc_val_musk/*
+!features/crc_val_musk/README.md
+!features/crc_val_musk/embeddings.npy
+!features/crc_val_musk/metadata.csv
+!features/crc_val_musk/extraction_config.json
+!features/crc_val_musk/failures.csv
