@@ -1,0 +1,38 @@
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Python caches and compiled files
+__pycache__/
+*.py[cod]
+*.pyd
+
+# Local Python environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local datasets and generated outputs
+data/
+datasets/
+outputs/
+results/
+*.log
+
+# Model weights and exported models
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.h5
+*.keras
+
+# OS metadata
+.DS_Store
+Thumbs.db
