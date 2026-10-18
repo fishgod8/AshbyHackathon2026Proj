@@ -7,7 +7,7 @@ import sys
 
 def load_embeddings(csv_path):
     df = pd.read_csv(csv_path)
-    column_names = df.columns.tolist()
+    # column_names = df.columns.tolist()
     # CSV stores each embedding as a string representation of a list.
     X = np.stack(
         df["embedding"].apply(
@@ -28,7 +28,7 @@ def load_embeddings(csv_path):
     return df, X
 
 
-def cosine_search(X, df, new_embedding, k=5):
+def cosine_search(X, df, new_embedding, new_label="", k=5):
     """
     Find the k most similar images to an image already in X.
     Excludes the query image itself.
@@ -41,7 +41,9 @@ def cosine_search(X, df, new_embedding, k=5):
     k = min(k, len(similarities))
     indices = np.argpartition(-similarities, k - 1)[:k]
     indices = indices[np.argsort(-similarities[indices])]
-    
+
+    prec_count = 0
+
     for rank, idx in enumerate(indices, start=1):
         print(
             f"{rank}. Similarity: {similarities[idx]:.4f} | "
@@ -50,15 +52,24 @@ def cosine_search(X, df, new_embedding, k=5):
         for num, col in enumerate(df.columns.tolist()):
             if col != "embedding":
                 print(f"{df.columns[num]}: {df.iat[idx, num]} | ")
+            if col == "label" and df.iat[idx, num] == new_label:
+                prec_count += 1
+    if new_label != "":
+        print(
+            f"Precision: {prec_count / k } "
+        )
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("Usage: python script.py <image_path> <embeddings_path>")
+        print("Usage: python script.py <image_path> <embeddings_path> <new_label (optional)>")
         sys.exit(1)
     new_embedding = embed([load_your_own_image(sys.argv[1])])
     df, X = load_embeddings(sys.argv[2])
     new_embedding = np.asarray(new_embedding, dtype=np.float32)
+    new_label = "" 
+    if len(sys.argv) > 3:
+        new_label = sys.argv[3]
 
     # Normalize the query using the same method as the database.
     new_embedding = normalize(new_embedding.reshape(1, -1), norm="l2")[0]
@@ -68,5 +79,5 @@ if __name__ == "__main__":
     print(f"Embedding dimensions: {X.shape[1]}")
 
     # Example: retrieve the 5 nearest neighbors of image 0.
-    cosine_search(X, df, new_embedding, k=5)
+    cosine_search(X, df, new_embedding, new_label, k=5)
 
