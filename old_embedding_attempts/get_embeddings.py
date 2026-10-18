@@ -25,13 +25,19 @@ import requests
 from pathlib import Path
 import numpy as np
 
-CRC_DATASET_PATH = "/projects/bfqi/shared/datasets/NCT-CRC-HE-100K/data-samples/"
-PATH_GEN_DATASET = "/projects/bfqi/shared/datasets/pathgen_dataset/"
-PATH_MMU_DATASET = "/projects/bfqi/shared/datasets/pathmmu/"
-QUILT_DATASET = "/work/nvme/bfqi/shared/datasets/quilt/"
+import os
+from dotenv import load_dotenv
+
+# Load the environment variables from .env
+load_dotenv()
+
+CRC_DATASET_PATH = os.getenv("CRC_DATASET_PATH")
+PATH_GEN_DATASET = os.getenv("PATH_GEN_DATASET")
+PATH_MMU_DATASET = os.getenv("PATH_MMU_DATASET")
+QUILT_DATASET = os.getenv("QUILT_DATASET")
 # conch
-ENDPOINT = "http://gpub055.delta.ncsa.illinois.edu:8000"  # from the organizers, or connection.json
-API_KEY = "pathology-a635d8d6257ec250cba411a7d0015522"  # from the organizers, or connection.json
+ENDPOINT = os.getenv("ENDPOINT")  # from the organizers, or connection.json
+API_KEY = os.getenv("API_KEY")  # from the organizers, or connection.json
 # musk: http://gpub055.delta.ncsa.illinois.edu:8001  key: pathology-b3c1ee0440811e42e9e88ee01fd7b45e
 # quiltnet: http://gpub055.delta.ncsa.illinois.edu:8002  key: pathology-fb3527e02553d669c4394ab555428f06
 # plip: http://gpub055.delta.ncsa.illinois.edu:8003  key: pathology-596428c144e2ac806ff2eefecad01831
