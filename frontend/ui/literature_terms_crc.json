@@ -1,0 +1,12 @@
+{
+  "_comment": "PubMed search words per CRC-100K class (search vocabulary only, not clinical claims). Empty list = no literature for that class. Replace with the new dataset's classes when Mayumi's hard-case data arrives.",
+  "ADI": ["adipose tissue", "fat"],
+  "BACK": [],
+  "DEB": ["necrosis", "necrotic debris"],
+  "LYM": ["lymphocytes", "lymphoid"],
+  "MUC": ["mucin", "mucinous"],
+  "MUS": ["smooth muscle", "muscularis propria"],
+  "NORM": ["normal mucosa", "normal colonic mucosa"],
+  "STR": ["desmoplastic stroma", "tumor stroma", "cancer-associated fibroblasts"],
+  "TUM": ["adenocarcinoma", "tumor epithelium"]
+}

@@ -1,0 +1,11 @@
+# UI env (separate from ../requirements.txt: gradio 6 needs huggingface_hub>=1.16,
+# which conflicts with transformers<5 used for PLIP embeddings).
+gradio>=6.30
+numpy
+pandas
+Pillow>=10.0
+# Only needed for the upload tab (python app.py --live): live QuiltNet + stub models.
+torch
+torchvision
+open_clip_torch>=2.24
+scikit-learn>=1.3

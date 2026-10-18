@@ -1,0 +1,14 @@
+# Same stack as ncsa/ashby-hackathon-2026 (external/ashby-hackathon-2026/requirements.txt).
+torch>=2.2
+torchvision>=0.17
+open_clip_torch>=2.24
+# <5: transformers 5.x changed CLIPModel.get_image_features to return a model
+# output object, which breaks the official hfclip adapter (PLIP).
+transformers>=4.40,<5
+huggingface_hub>=0.23
+numpy
+pandas>=2.0
+Pillow>=10.0
+scikit-learn>=1.3
+matplotlib
+tqdm>=4.66

@@ -1,0 +1,7 @@
+{
+  "_comment": "PubMed search words per BACH class (search vocabulary only, not clinical claims). Used with --context breast.",
+  "Normal": ["normal breast tissue", "normal breast"],
+  "Benign": ["benign breast lesion", "benign breast lesions", "fibroadenoma", "fibrocystic"],
+  "InSitu": ["ductal carcinoma in situ", "carcinoma in situ", "DCIS"],
+  "Invasive": ["invasive carcinoma", "invasive ductal carcinoma", "invasive breast carcinoma"]
+}

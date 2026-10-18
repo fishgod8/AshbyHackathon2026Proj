@@ -1,0 +1,18 @@
+{
+  "_comment": "EXAMPLE ONLY - not loaded. Format for an optional <data folder>/ihc.json. Content is unvalidated (from a team brainstorm) and only makes sense for breast lesion classes (e.g., BRACS). TODO: validate every rule with a pathologist and add a literature citation before use.",
+  "disclaimer": "for reference only; pending pathologist review",
+  "rules": [
+    {
+      "classes": ["UDH", "ADH"],
+      "stains": ["CK5/6", "ER"],
+      "why": "TODO: validate with pathologist",
+      "source": "TODO: add citation"
+    },
+    {
+      "classes": ["DCIS", "IC"],
+      "stains": ["p63", "calponin"],
+      "why": "TODO: validate with pathologist (myoepithelial layer present or absent)",
+      "source": "TODO: add citation"
+    }
+  ]
+}
