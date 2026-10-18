@@ -31,6 +31,31 @@ def assess_uncertainty(
     return confidence, confidence < threshold
 
 
+def assess_prediction(prediction: dict, threshold: float) -> dict[str, object]:
+    """Assess a classifier prediction without depending on model inference.
+
+    ``embedding`` and any other prediction fields are intentionally ignored.
+    """
+    if not isinstance(prediction, dict):
+        raise ValueError("prediction must be a dictionary")
+
+    predicted_class = prediction.get("predicted_class")
+    if not isinstance(predicted_class, str) or not predicted_class.strip():
+        raise ValueError("prediction must contain a non-empty predicted_class")
+
+    scores = prediction.get("scores")
+    if not isinstance(scores, dict) or not scores:
+        raise ValueError("prediction must contain a non-empty scores dictionary")
+
+    confidence, needs_review = assess_uncertainty(scores.values(), threshold)
+    return {
+        "predicted_class": predicted_class,
+        "confidence": confidence,
+        "needs_review": needs_review,
+        "threshold": threshold,
+    }
+
+
 if __name__ == "__main__":
     # This threshold is provisional; select it later using validation data.
     example_threshold = 0.7
