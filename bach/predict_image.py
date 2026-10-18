@@ -32,10 +32,9 @@ def predict_image(image_path, model_path=None):
         image = original.convert("RGB")
         width, height = image.size
 
-        if (width, height) != (2048, 1536):
+        if width < 224 or height < 224:
             raise ValueError(
-                "This model currently expects a 2048 x 1536 "
-                "BACH-style microscopy image."
+                "Image must be at least 224 x 224 pixels."
             )
 
         patches = []
