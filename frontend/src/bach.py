@@ -413,6 +413,9 @@ def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path
                        f"{gate.config['threshold']:.3f}). Reference gallery shown on screen: "
                        f"{len(gallery)} of the {n_ref} training images ({per_class} per class)."),
     }
+    steps = REPO / "ui/next_steps_bach.json"  # suggested next step per candidate pair (draft until a pathologist reviews it)
+    if steps.exists():
+        (out / "next_steps.json").write_text(steps.read_text())
     (out / "cases.json").write_text(json.dumps(cases, indent=2))
     (out / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
     (out / "evidence.json").write_text(json.dumps(evidence, indent=2))

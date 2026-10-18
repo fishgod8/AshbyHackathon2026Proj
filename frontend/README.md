@@ -10,11 +10,12 @@ H&E image (any size from 224 x 224; BACH photos are 2048 x 1536)
       unfamiliar image: cosine distance to the 5th nearest training image above the
       95th percentile of validation images (ashley_review gate)
  -> similar confirmed images: stub centered-cosine top-k (Felix's retrieval not delivered yet)
- -> PubMed papers for the top two candidates, AI-screened, quotes verified verbatim
+ -> flagged differential: suggested next step (stain or imaging correlation, cited), then general steps
+ -> background PubMed papers for the top two candidates (folded), AI-screened, quotes verified verbatim
 ```
 
-Pages: **Lookup** (upload or pick an image: suggestion, why, side-by-side references per
-candidate, papers) and **Evidence** (when "confident" can be trusted, review checks compared,
+Pages: **Lookup** (upload or pick an image: suggestion, why, suggested next step, side-by-side
+references per candidate, background papers) and **Evidence** (when "confident" can be trusted, review checks compared,
 what happens when the input changes). Queue and Review pages exist but are hidden for the demo
 (`--show-review`).
 
@@ -34,7 +35,20 @@ sets that module constant instead of editing the file. The gate is rebuilt on Ma
 reference = her 320 training images, limit = 95th percentile over her 40 validation images.
 Files are written in Ashley's formats to `ui/data_bach/support/`.
 
-Felix's retrieval plugs in at `load_gallery()` / `analyze_embedding()` in `src/bach.py`.
+Felix's retrieval plugs in at `load_gallery()` / `analyze_embedding()` in `src/bach.py`. What the UI needs:
+a function that takes one 512-dim embedding of a new image (Mayumi's QuiltNet, mean of 12 patches),
+searches her `bach/image_embeddings.csv` rows with `split == "train"` (320 images), optionally filtered
+to one class, and returns the k most similar as `[{image_id, label, score}]`. The gallery must be in the
+same embedding space as the query (same model, same patching), or the scores are meaningless.
+
+## Suggested next step (pathologist feedback, 10/18)
+
+A pathologist told us that, when unsure, pathologists order tests rather than read papers. So a flagged
+differential now leads with a next step from `ui/next_steps_bach.json`: one test per class pair
+(p63 and 34βE12; CK5/6; p63 with SMMHC or calponin; imaging correlation for normal vs benign), then
+"look at more of the lesion" and "ask a colleague". Every test cites verbatim sentences that code checked
+against the PubMed abstract. It is labeled a draft until a pathologist reviews it:
+`docs/next_steps_review.md` is the review sheet. Papers are folded under "Background papers".
 
 ## Run it
 
@@ -44,8 +58,9 @@ All commands from this `frontend/` folder. Python 3.10+.
 python -m venv ui/.venv && ui/.venv/bin/pip install -r ui/requirements.txt
 git fetch origin mayumi-model                       # the build reads Mayumi's artifacts from this branch
 
-# Build the data folder (about 0.74 GB: 80 BACH photos fetched from Zenodo by range request)
-ui/.venv/bin/python -m src.bach build --out ui/data_bach --per-class 10 \
+# Build the data folder: 40 test photos + the reference gallery fetched from Zenodo by range request
+# (--per-class 80 = all 320 training images, about 3.2 GB to download; --per-class 10 = about 0.74 GB)
+ui/.venv/bin/python -m src.bach build --out ui/data_bach --per-class 80 \
     --test-zip /path/to/ICIAR2018_BACH_Challenge_TestDataset.zip
 
 # Optional: literature (PubMed), then AI screening (needs DEEPSEEK_API_KEY in frontend/.env, never committed)
@@ -78,6 +93,9 @@ earlier prototype on CRC-100K with stub models.
   mean shrinks the rest. The stub retrieval therefore removes the training mean first (centered cosine: same
   class 0.135 vs different class -0.045). Ranking barely changes (over all 320 training images: top-1 same
   class 75% either way), so ranking quality is for the real retrieval module.
+- Gallery size matters more: with all 320 training images instead of 40, the closest image's centered
+  score rises from a median of 0.66 to 0.84, and the closest image has the true class for 30 of 40 test
+  images instead of 26.
 - BACH has no patient IDs, so the split is by image and results may be optimistic.
 - Mayumi's `classifier.pkl` was pickled with scikit-learn 1.7.2; loading with another version warns
   (results here match her `evaluation.csv` to 7e-8 with 1.9.1).

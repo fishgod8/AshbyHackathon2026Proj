@@ -1,0 +1,176 @@
+{
+  "_comment": "Suggested next steps per pair of candidate classes (BACH). DRAFT built only from verbatim, verified quotes in literature.json or checked against the PubMed abstract; every entry must be confirmed or corrected by a pathologist. Set status to 'reviewed' and fill reviewed_by only after that review.",
+  "status": "draft",
+  "status_note": "Draft from the papers cited; not yet reviewed by a pathologist.",
+  "reviewed_by": null,
+  "general": [
+    {
+      "action": "Look at more of the lesion: other fields, or deeper levels from the block"
+    },
+    {
+      "action": "Ask a colleague for a second opinion"
+    }
+  ],
+  "pairs": [
+    {
+      "classes": [
+        "InSitu",
+        "Invasive"
+      ],
+      "tests": [
+        {
+          "name": "p63 and 34βE12",
+          "read": "These help show whether the myoepithelial layer around the tumor nests is intact: intact supports in situ carcinoma, absent supports invasion.",
+          "sources": [
+            {
+              "pmid": "35367980",
+              "citation": "Pinto D et al., Pathobiology 2022",
+              "title": "Immunohistochemistry Applied to Breast Cytological Material.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/35367980/",
+              "quote": "We found that p63 and 34βE12 show promise in aiding in the differential diagnosis between in situ and invasive lesions and that most other diagnostic markers may be used as in tissue."
+            },
+            {
+              "pmid": "29197112",
+              "citation": "Rakha EA et al., Histopathology 2018",
+              "title": "Invasion in breast lesions: the role of the epithelial-stroma barrier.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/29197112/",
+              "quote": "Differentiation of these two different lesions in breast pathological diagnosis is based typically on the presence of an intact barrier between the malignant epithelial cells and stroma; namely, the myoepithelial cell (MEC) layer and surrounding basement membrane (BM)."
+            }
+          ],
+          "kind": "stain"
+        }
+      ]
+    },
+    {
+      "classes": [
+        "Benign",
+        "InSitu"
+      ],
+      "tests": [
+        {
+          "name": "CK5/6",
+          "read": "If the benign candidate is usual ductal hyperplasia: it usually co-expresses CK5/6, while atypical ductal hyperplasia and DCIS typically lack it.",
+          "sources": [
+            {
+              "pmid": "12474219",
+              "citation": "Going JJ et al., J Pathol 2003",
+              "title": "Stages on the way to breast cancer.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/12474219/",
+              "quote": "Immunohistochemistry shows that most HUT have a mixed precursor phenotype resembling normal breast with co-expression of cytokeratin 5/6, 8/18/19 and SMA, in contrast to atypical ductal hyperplasia (ADH) and ductal carcinoma in situ which typically have a 'mature' luminal phenotype positive for cytokeratin 8/18/19 but lacking cytokeratin 5/6 expression."
+            }
+          ],
+          "kind": "stain"
+        }
+      ]
+    },
+    {
+      "classes": [
+        "InSitu",
+        "Normal"
+      ],
+      "tests": [
+        {
+          "name": "CK5/6",
+          "read": "Normal breast epithelium co-expresses CK5/6; DCIS typically lacks it.",
+          "sources": [
+            {
+              "pmid": "12474219",
+              "citation": "Going JJ et al., J Pathol 2003",
+              "title": "Stages on the way to breast cancer.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/12474219/",
+              "quote": "Immunohistochemistry shows that most HUT have a mixed precursor phenotype resembling normal breast with co-expression of cytokeratin 5/6, 8/18/19 and SMA, in contrast to atypical ductal hyperplasia (ADH) and ductal carcinoma in situ which typically have a 'mature' luminal phenotype positive for cytokeratin 8/18/19 but lacking cytokeratin 5/6 expression."
+            }
+          ],
+          "kind": "stain"
+        }
+      ]
+    },
+    {
+      "classes": [
+        "Benign",
+        "Invasive"
+      ],
+      "tests": [
+        {
+          "kind": "stain",
+          "name": "p63 with smooth muscle myosin heavy chain or calponin",
+          "read": "Benign mimics such as sclerosing lesions keep a myoepithelial layer around their glands; invasive carcinoma lacks it.",
+          "sources": [
+            {
+              "pmid": "23486609",
+              "citation": "Lee AH et al., J Clin Pathol 2013",
+              "title": "Use of immunohistochemistry in the diagnosis of problematic breast lesions.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/23486609/",
+              "quote": "Myoepithelial markers, such as smooth muscle actin, smooth muscle myosin heavy chain and p63, are useful for distinguishing invasive carcinoma from sclerosing lesions and ductal carcinoma in situ (DCIS), and in the classification of papillary lesions."
+            },
+            {
+              "pmid": "12502930",
+              "citation": "Werling RW et al., Am J Surg Pathol 2003",
+              "title": "Immunohistochemical distinction of invasive from noninvasive breast lesions: a comparative study of p63 versus calponin and smooth muscle myosin heavy chain.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/12502930/",
+              "quote": "Identification of myoepithelial cells using antibodies to cytoskeletal proteins, such as smooth muscle myosin heavy chain (SMM-HC) and calponin, can play an important role in distinguishing invasive carcinoma from its histologic mimics."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "classes": [
+        "Invasive",
+        "Normal"
+      ],
+      "tests": [
+        {
+          "kind": "stain",
+          "name": "p63 with smooth muscle myosin heavy chain or calponin",
+          "read": "Normal ducts and lobules have a myoepithelial (basal) layer; invasive carcinoma lacks it.",
+          "sources": [
+            {
+              "pmid": "38012539",
+              "citation": "Alkhayyat R et al., Histopathology 2024",
+              "title": "Tumour 63 protein (p63) in breast pathology: biology, immunohistochemistry, diagnostic applications, and pitfalls.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/38012539/",
+              "quote": "p63 protein is normally expressed in the nuclei of the basal cell layer of glandular organs, including breast, in squamous epithelium and in urothelium."
+            },
+            {
+              "pmid": "31502889",
+              "citation": "Bonacho T et al., Biotech Histochem 2020",
+              "title": "Immunohistochemistry for diagnosis and prognosis of breast cancer: a review.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/31502889/",
+              "quote": "Myoepithelial cell (MEC) stains are used to evaluate in situ and invasive carcinoma; calponin, smooth muscle myosin heavy chain and p63 are sensitive/specific markers."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "classes": [
+        "Benign",
+        "Normal"
+      ],
+      "tests": [
+        {
+          "kind": "correlate",
+          "name": "Correlate with imaging",
+          "read": "Check that the tissue matches the imaging target. If imaging showed a lesion but the tissue looks normal, the result may be discordant; a discordant suspicious case needs repeat biopsy or excision.",
+          "sources": [
+            {
+              "pmid": "37676826",
+              "citation": "Wells VA et al., Radiographics 2023",
+              "title": "Demystifying Breast Disease Markers.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/37676826/",
+              "quote": "Assessment of radiologic-pathologic concordance is vital in guiding appropriate management, as it enables identification of discordant results, minimizing the chance of misdiagnosis."
+            },
+            {
+              "pmid": "36778653",
+              "citation": "Speer ME et al., J Breast Imaging 2023",
+              "title": "Pseudoangiomatous Stromal Hyperplasia: Radiologic-Pathologic Correlation.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/36778653/",
+              "quote": "Surgical excision or repeat core-needle biopsy is necessary for discordant suspicious cases."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

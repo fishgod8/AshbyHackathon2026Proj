@@ -68,6 +68,7 @@ SIMILARITY_NOTE = (f'<p class="small muted sim-note">{escape(META["similarity_no
 EVIDENCE = load_optional("evidence.json")
 # Optional IHC knowledge table: {"disclaimer": ..., "rules": [{"classes": [...], "stains": [...], "why": ..., "source": ...}]}
 IHC = load_optional("ihc.json")
+NEXT_STEPS = load_optional("next_steps.json")  # what to do next per candidate pair (tests first, then general steps)
 # Optional PubMed papers per differential pair (src/literature.py); only reviewed ones are shown up front.
 LITERATURE = load_optional("literature.json")
 
@@ -304,6 +305,30 @@ REFERENCES_SOURCE = (
 )
 
 
+def next_steps_html(c):
+    """Suggested next step for a flagged differential: tests for this pair, then general steps. Empty if none."""
+    alts = [x for x in c["candidate_set"] if x != c["prediction"]]
+    if not NEXT_STEPS or not alts:
+        return ""
+    pair = {c["prediction"], alts[0]}
+    entry = next((e for e in NEXT_STEPS["pairs"] if set(e["classes"]) == pair), None)
+    items = []
+    for t in (entry or {}).get("tests", []):
+        srcs = " · ".join(f'<a href="{escape(s["url"])}" target="_blank" rel="noopener">{escape(s["citation"])}</a>'
+                          for s in t["sources"])
+        quotes = "".join(f'<p class="quote">\u201c{escape(s["quote"])}\u201d <span class="muted">({escape(s["citation"])})</span></p>'
+                         for s in t["sources"])
+        name = f'Stain: {t["name"]}' if t.get("kind", "stain") == "stain" else t["name"]
+        items.append(f'<li><b>{escape(name)}</b><div class="step-read">{escape(t["read"])}</div>'
+                     f'<details class="step-src"><summary>Source: {srcs}</summary>{quotes}</details></li>')
+    if entry is not None and not entry.get("tests"):
+        items.append('<li><span class="muted">No test listed yet for this pair; to be added with a pathologist.</span></li>')
+    items += [f'<li><b>{escape(g["action"])}</b></li>' for g in NEXT_STEPS.get("general", [])]
+    a, b = full_name(c["prediction"]), full_name(alts[0])
+    return (f'<div class="next-steps"><div class="next-title">Suggested next step for {escape(a)} vs {escape(b)}</div>'
+            f'<ol>{"".join(items)}</ol><p class="small muted step-status">{escape(NEXT_STEPS.get("status_note", ""))}</p></div>')
+
+
 def references_html(c):
     """Literature and stains for the top two candidates. Empty when the case has no differential."""
     alts = [x for x in c["candidate_set"] if x != c["prediction"]]
@@ -315,15 +340,17 @@ def references_html(c):
         return ""  # pair never searched (e.g. background is not a tissue): nothing honest to show
     lit = lit or {}
     a, b = full_name(c["prediction"]), full_name(alts[0])
-    return (
-        '<div class="references">'
-        f'<h3 class="subhead">References for {escape(a)} vs {escape(b)}</h3>'
+    body = (
         f'<p class="small muted ref-source">{REFERENCES_SOURCE}</p>'
         '<div class="references-grid">'
         f'<section><div class="ref-title">Telling them apart</div>{papers_html(lit.get("differential"))}</section>'
         f'<section><div class="ref-title">Stains that may help</div>{ihc_rules_html(pair)}{papers_html(lit.get("ihc"))}</section>'
-        '</div></div>'
+        '</div>'
     )
+    if NEXT_STEPS:  # the next step leads; papers are background, folded (pathologist feedback, 10/18)
+        return (f'<details class="references refs-fold"><summary class="subhead">Background papers for {escape(a)} '
+                f'vs {escape(b)}</summary>{body}</details>')
+    return f'<div class="references"><h3 class="subhead">References for {escape(a)} vs {escape(b)}</h3>{body}</div>'
 
 
 def references_update(c):
@@ -365,13 +392,15 @@ def verdict_html(c, mode="case", show_truth=False):
         parts.append(f'<div class="verdict-alt"><span class="muted">Could also be</span> {alt_txt}</div>')
     tone = " note-warn" if agree * 2 < n else ""
     parts.append(f'<div class="note{tone}">{agree} of the {n} most similar confirmed {REF_NOUN} are {escape(pred)}.</div>')
-    if mode == "lookup":
-        nxt = "Compare the candidates below. Reference lookup, not a diagnosis."
+    steps = next_steps_html(c) if c["risk"] != "confident" else ""
+    if steps:  # flagged differential: what to do next comes before comparing pictures
+        parts.append(steps)
+    elif mode == "lookup":
+        parts.append('<div class="next">Compare the candidates below. Reference lookup, not a diagnosis.</div>')
     elif c["risk"] == "confident":
-        nxt = "Cleared automatically. You are spot-checking it."
+        parts.append('<div class="next">Cleared automatically. You are spot-checking it.</div>')
     else:
-        nxt = "Compare the candidates below, then accept or correct."
-    parts.append(f'<div class="next">{escape(nxt)}</div>')
+        parts.append('<div class="next">Compare the candidates below, then accept or correct.</div>')
     if show_truth and c.get("true_label"):
         truth, flagged = c["true_label"], c["risk"] != "confident"
         if truth == pred:
@@ -697,6 +726,16 @@ CSS = """
 .note ul { margin:6px 0 0 18px; }
 .note-warn { color:var(--warn); background:var(--warn-bg); }
 .next { font-size:14px; font-weight:600; color:var(--accent); margin-top:12px; }
+/* Suggested next step: tests for the differential first, then general steps */
+.next-steps { margin-top:14px; border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:var(--surface, #fff); }
+.next-title { font-size:14px; font-weight:600; color:var(--accent); }
+.next-steps ol { margin:8px 0 0 18px; padding:0; }
+.next-steps li { font-size:14px; color:var(--ink); margin-top:6px; line-height:1.4; }
+.step-read { font-size:13.5px; color:var(--ink-2); margin-top:2px; }
+.step-src summary { cursor:pointer; font-size:12.5px; color:var(--muted); margin-top:3px; }
+.step-src .quote { font-size:12.5px; margin:6px 0 0; padding:6px 10px; border-radius:6px; background:var(--hover); color:var(--ink-2); }
+.step-status { margin:8px 0 0; }
+.refs-fold > summary { cursor:pointer; margin-top:8px; }
 .truth { font-size:13px; color:var(--ink-2); border:1px dashed oklch(0.75 0.01 260); border-radius:8px; padding:8px 12px; margin-top:12px; }
 
 /* Images: the tissue is the hero; no box, rounded corners, scaled up from 224 px */
