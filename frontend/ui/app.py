@@ -62,6 +62,8 @@ CLASSES = META.get("classes") or sorted(CASES[0]["probabilities"])
 CLASS_NAMES = META.get("class_names", {})
 REF_NOUN = META.get("reference_noun", "tiles")  # "tiles" or "lesions", depending on what labels mean
 UNIT, UNITS = ("image", "images") if REF_NOUN == "images" else ("tile", "tiles")  # what one case is
+SIMILARITY_NOTE = (f'<p class="small muted sim-note">{escape(META["similarity_note"])}</p>'
+                   if META.get("similarity_note") else "")
 # Evidence numbers (see docs/INTERFACE.md); the tab shows a notice if missing.
 EVIDENCE = load_optional("evidence.json")
 # Optional IHC knowledge table: {"disclaimer": ..., "rules": [{"classes": [...], "stains": [...], "why": ..., "source": ...}]}
@@ -334,20 +336,33 @@ def verdict_html(c, mode="case", show_truth=False):
     probs, pred = c["probabilities"], c["prediction"]
     alts = [x for x in c["candidate_set"] if x != pred]
     agree, n = sum(s["label"] == pred for s in c["similar_cases"]), len(c["similar_cases"])
-    parts = [
-        f'<div class="label">{"Suggested" if mode == "case" else "Closest match"}</div>',
-        f'<div class="verdict-main">{escape(full_name(pred))}</div>',
-        f'<div class="verdict-conf">{probs[pred]:.0%} confidence</div>',
-    ]
+    support = c.get("support")
+    if is_unfamiliar(c) and mode == "lookup":  # no class, no comparisons: only the warning and what to do
+        return (
+            '<div class="verdict"><div class="label">Result</div>'
+            f'<div class="verdict-main">Unfamiliar {UNIT}</div>'
+            f'<div class="note note-warn">It is farther from the training {UNITS} than {support["percentile"]}% of '
+            f"validation {UNITS} were, so the AI gives no class for it. Compression, another magnification or "
+            "another tissue type can cause this.</div>"
+            '<div class="next">Try the original photo: uncompressed, at full scanner resolution.</div></div>'
+        )
+    if is_unfamiliar(c):  # review queue: the class is not the headline when the input is outside what the model knows
+        parts = [
+            f'<div class="label">{"Suggested" if mode == "case" else "Closest match"}</div>',
+            f'<div class="verdict-main">Unfamiliar {UNIT}</div>',
+            f'<div class="note note-warn">It is farther from the training {UNITS} than {support["percentile"]}% of '
+            f"validation {UNITS} were, so the class probabilities below are less reliable. Compression, another magnification or "
+            "another tissue type can cause this.</div>",
+        ]
+    else:
+        parts = [
+            f'<div class="label">{"Suggested" if mode == "case" else "Closest match"}</div>',
+            f'<div class="verdict-main">{escape(full_name(pred))}</div>',
+            f'<div class="verdict-conf">{probs[pred]:.0%} confidence</div>',
+        ]
     if alts:
         alt_txt = ", ".join(f"<b>{escape(full_name(a))}</b> {probs.get(a, 0):.0%}" for a in alts)
         parts.append(f'<div class="verdict-alt"><span class="muted">Could also be</span> {alt_txt}</div>')
-    support = c.get("support")
-    if support and support["flagged"]:  # reference-support check: unlike what the model learned from
-        parts.append(
-            f'<div class="note note-warn"><b>Unfamiliar {UNIT}.</b> It is farther from the training {UNITS} than '
-            f'{support["percentile"]}% of validation {UNITS} were, so this suggestion is less reliable. Compression, '
-            "another magnification or another tissue type can cause this.</div>")
     tone = " note-warn" if agree * 2 < n else ""
     parts.append(f'<div class="note{tone}">{agree} of the {n} most similar confirmed {REF_NOUN} are {escape(pred)}.</div>')
     if mode == "lookup":
@@ -410,8 +425,16 @@ def prob_bars_html(c, top_n=5):
     return f'<div class="probs"><div class="label">Class probabilities</div>{rows}</div>'
 
 
+def is_unfamiliar(c):
+    """Reference-support check (Ashley): the image is unlike what the model learned from."""
+    return bool(c.get("support") and c["support"]["flagged"])
+
+
 def why_html(c, mode="case"):
     """Shown under the decision: the uncertainty module's reason and the top class probabilities."""
+    if is_unfamiliar(c) and mode == "lookup":  # distance only; probabilities would suggest a class
+        return (f'<div class="why"><div class="why-title">Why it was flagged</div>'
+                f'<p class="why-reason">{escape(c["support"]["reason"])}</p></div>')
     if mode == "lookup":
         title = "Why this match"
     elif c["risk"] == "confident":
@@ -524,6 +547,10 @@ def lookup(image):
                 gr.Accordion(visible=False), [])
     result = localize_result(analyzed, LIVE_CACHE / "images")
     why, neighbors = why_outputs(result, LIVE_CACHE, "lookup")
+    if is_unfamiliar(result):  # e.g. a beach photo must not be compared with "the closest in situ carcinoma"
+        hidden = [gr.Gallery(value=None, visible=False)] * N_COMPARE
+        return (verdict_html(result, "lookup"), gr.HTML(value=why, visible=True), gr.HTML(visible=False), *hidden,
+                gr.HTML(visible=False), gr.Accordion(visible=False), [])
     return (
         verdict_html(result, "lookup"), gr.HTML(value=why, visible=True), gr.HTML(visible=True),
         *compare_updates(result, LIVE_CACHE), references_update(result), gr.Accordion(visible=True), neighbors,
@@ -716,15 +743,17 @@ CSS = """
 .correction { gap:10px !important; padding:10px; margin-top:2px; background:var(--surface);
               border:1px solid var(--line); border-radius:var(--radius); align-items:center !important; }
 /* Class probabilities: flat bars, no gradients */
-.prob-row { margin-top:10px; }
-.prob-head { display:flex; justify-content:space-between; gap:12px; font-size:14px; color:var(--ink-2); }
+.probs { max-width:420px; }
+.prob-row { display:grid; grid-template-columns:minmax(0,1fr) 96px; align-items:center; column-gap:12px; margin-top:6px; }
+.prob-head { display:flex; justify-content:space-between; gap:8px; font-size:13px; color:var(--ink-2); }
 .prob-val { font-variant-numeric:tabular-nums; color:var(--ink); font-weight:500; }
-.prob-track { height:6px; margin-top:5px; background:var(--line); border-radius:999px; overflow:hidden; }
+.prob-track { height:4px; background:var(--line); border-radius:999px; overflow:hidden; }
 .prob-fill { height:100%; border-radius:999px; }
 .bar-strong { background:var(--accent); }
 .bar-soft { background:oklch(0.74 0.025 255); }
 .subhead { font-size:15px; font-weight:600; color:var(--ink); margin:12px 0 0; }
 .small { font-size:13px; }
+.sim-note { margin:2px 0 0; }
 
 /* References: literature and stains for the differential */
 .references { margin-top:4px; }
@@ -816,7 +845,8 @@ with gr.Blocks(title="Pathology Assistant") as demo:
                         cancel_btn = gr.Button("Cancel", variant="secondary", scale=0, min_width=90,
                                                elem_classes="link-btn")
                     case_why = gr.HTML(elem_classes="flush")
-            gr.HTML(f'<h3 class="subhead">Compare with confirmed reference {REF_NOUN}</h3>', elem_classes="flush")
+            gr.HTML(f'<h3 class="subhead">Compare with confirmed reference {REF_NOUN}</h3>{SIMILARITY_NOTE}',
+                    elem_classes="flush")
             with gr.Row():
                 case_compare = [gr.Gallery(columns=3, height=200, visible=False, buttons=[], elem_classes="compare")
                                 for _ in range(N_COMPARE)]
@@ -846,7 +876,8 @@ with gr.Blocks(title="Pathology Assistant") as demo:
                     with gr.Column(scale=6):
                         lk_verdict = gr.HTML(LOOKUP_EMPTY, elem_id="lk-verdict", elem_classes="flush")
                         lk_why = gr.HTML(visible=False, elem_classes="flush")
-                lk_compare_title = gr.HTML(f'<h3 class="subhead">Compare with confirmed reference {REF_NOUN}</h3>',
+                lk_compare_title = gr.HTML(f'<h3 class="subhead">Compare with confirmed reference {REF_NOUN}</h3>'
+                                           f'{SIMILARITY_NOTE}',
                                            visible=False, elem_classes="flush")
                 with gr.Row():
                     lk_compare = [gr.Gallery(columns=3, height=200, visible=False, buttons=[], elem_classes="compare")

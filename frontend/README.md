@@ -6,10 +6,10 @@ A Gradio workbench that runs the team's modules end to end on BACH breast histol
 H&E image (any size from 224 x 224; BACH photos are 2048 x 1536)
  -> Mayumi: 12 patches of 224 on a 3x4 grid -> QuiltNet-B-32 -> mean -> classifier.pkl -> 4 class probabilities
  -> Ashley: two review checks
-      confidence below the threshold (assess_uncertainty, provisional 0.7)
+      confidence below the threshold (assess_uncertainty; 0.9, chosen on validation)
       unfamiliar image: cosine distance to the 5th nearest training image above the
       95th percentile of validation images (ashley_review gate)
- -> similar confirmed images: stub cosine top-k (Felix's retrieval not delivered yet)
+ -> similar confirmed images: stub centered-cosine top-k (Felix's retrieval not delivered yet)
  -> PubMed papers for the top two candidates, AI-screened, quotes verified verbatim
 ```
 
@@ -63,13 +63,21 @@ earlier prototype on CRC-100K with stub models.
 
 ## Findings so far (for the team)
 
-- Mayumi's test set (40 images): accuracy 90%. At the 0.7 confidence threshold, 1 of the 4 errors is
-  flagged; 3 errors are marked confident. The threshold should be chosen on validation data.
+- Mayumi's test set (40 images): accuracy 90%. Confidence threshold 0.9, raised from Ashley's provisional
+  0.7 (agreed with her): on the 40 validation images it is the lowest value that sends every error to review
+  (0.7: 6 of 8). Test: all 4 errors flagged, but 19 of 40 images go to review. Three test errors sit at
+  0.85 to 0.88 confidence, so no single confidence threshold flags them without flagging many correct images.
 - The unfamiliar-image check rarely fires on BACH test images (1 of 40) and caught none of those errors.
   It does catch changed inputs: on 12 challenge test photos, an ordinary JPEG export changed the
   suggestion for 3 and was flagged for all 12; half resolution changed 5 and was flagged for 11; a
   colon tile (CRC-VAL-HE-7K) got "In situ carcinoma, 100%" and was flagged.
-- Lookup examples are stored lossless (WebP) for that reason; the upload hint asks for PNG.
+- Lookup examples are stored lossless (WebP) for that reason; the upload hint asks for PNG. An unfamiliar
+  upload shows only the warning and what to do next: no class, no comparison images, no papers.
+- Raw cosine between these embeddings is always high (0.74 to 0.997; same class 0.919 vs different class
+  0.902): every image shares one large component (mean training embedding has length 0.95) and the 12-patch
+  mean shrinks the rest. The stub retrieval therefore removes the training mean first (centered cosine: same
+  class 0.135 vs different class -0.045). Ranking barely changes (over all 320 training images: top-1 same
+  class 75% either way), so ranking quality is for the real retrieval module.
 - BACH has no patient IDs, so the split is by image and results may be optimistic.
 - Mayumi's `classifier.pkl` was pickled with scikit-learn 1.7.2; loading with another version warns
   (results here match her `evaluation.csv` to 7e-8 with 1.9.1).

@@ -8,7 +8,7 @@ Mayumi's predict_image.py), exactly as Mayumi's prepare_bach.py / predict_image.
        confidence: assess_uncertainty(probabilities, threshold)            (branch ashley-uncertainty)
        reference support: cosine distance to the 5th nearest training image,
        flagged above the 95th percentile of validation images              (main, ashley_review/)
-  -> cosine top-k over the reference gallery (Felix's retrieval not delivered yet: src/stubs.StubRetriever)
+  -> centered cosine top-k over the reference gallery (Felix's retrieval not delivered yet: CenteredRetriever)
 
 `build` assembles a UI data folder (cases.json, meta.json, evidence.json, gallery.csv, classifier.pkl,
 images/, examples/, support/ = Ashley's reference index and gate in her file formats). Photos come from the BACH Zenodo zip by range request (only the ones needed), are
@@ -54,7 +54,9 @@ QUILT_DIM = 512
 MIN_SIDE = 224  # one patch; Mayumi's predict_image.py accepts any size from here (mayumi-model @ 7f630c3)
 CLASS_NAMES = {"Normal": "Normal tissue", "Benign": "Benign lesion",
                "InSitu": "In situ carcinoma", "Invasive": "Invasive carcinoma"}
-DEFAULT_THRESHOLD = 0.7  # Ashley's provisional threshold (uncertainty.py)
+# Confidence threshold, raised from Ashley's provisional 0.7 (agreed with her 10/18): the lowest value that sends
+# every validation error to review on Mayumi's 40 validation images (0.7 caught 6 of 8, 0.9 caught 8 of 8).
+DEFAULT_THRESHOLD = 0.9
 SUPPORT_PERCENTILE = 95  # Ashley's gate rule: flag if reference_distance > validation 95th percentile
 
 # Ashley's reference-support module fixes EMBEDDING_DIMENSION = 1024 (MUSK). QuiltNet gives 512, so we set the
@@ -146,7 +148,7 @@ def ordinal(n: int) -> str:
     return {1: "1st", 2: "2nd", 3: "3rd"}.get(n, f"{n}th")
 
 
-def analyze_embedding(emb: np.ndarray, clf: MayumiClassifier, retriever: StubRetriever, threshold: float,
+def analyze_embedding(emb: np.ndarray, clf: MayumiClassifier, retriever: CenteredRetriever, threshold: float,
                       gate: SupportGate | None = None, image_id: str | None = None) -> dict:
     """One image embedding -> the result format the UI reads (image paths as the gallery stores them)."""
     classes, probs = clf.predict(emb)  # the classifier sees the raw mean embedding, as in training
@@ -159,7 +161,7 @@ def analyze_embedding(emb: np.ndarray, clf: MayumiClassifier, retriever: StubRet
         flag = {**flag, "risk": "review" if support["flagged"] else flag["risk"], "reason": " ".join(reasons)}
     order = np.argsort(probs)[::-1]
     candidates = flag["candidate_set"]
-    q = emb / np.linalg.norm(emb)  # retrieval: cosine against the normalized gallery
+    q = retriever.center(emb)
     rnd = lambda refs: [{**r, "score": round(r["score"], 3)} for r in refs]  # noqa: E731
     return {
         "prediction": classes[order[0]],
@@ -168,15 +170,32 @@ def analyze_embedding(emb: np.ndarray, clf: MayumiClassifier, retriever: StubRet
         "similar_cases": rnd(retriever.retrieve(q, k=5)),
         "contrast_cases": rnd(retriever.retrieve(q, k=2, label=candidates[1])) if len(candidates) > 1 else [],
         "candidate_examples": {c: rnd(retriever.retrieve(q, k=3, label=c)) for c in candidates},
-        **({"support": {k: v for k, v in support.items() if k != "reason"}} if support else {}),
+        **({"support": support} if support else {}),
     }
 
 
-def load_gallery(data_dir: Path) -> StubRetriever:
+class CenteredRetriever(StubRetriever):
+    """Stub retrieval (until Felix's module lands) on centered cosine.
+
+    Raw cosine between these embeddings is always high (0.74 to 0.997 on BACH; same class 0.919 vs different
+    class 0.902): every image shares one large "H&E histology" component, and the 12-patch mean shrinks the rest.
+    Removing the mean of the training embeddings first makes the score readable (same class 0.135, different
+    class -0.045) without changing the ranking much. Mayumi's classifier does the same through its StandardScaler.
+    """
+
+    def __init__(self, emb: np.ndarray, labels: np.ndarray, paths: list[str], mean: np.ndarray) -> None:
+        self.mean = mean
+        super().__init__(self.center(emb), labels, paths)
+
+    def center(self, emb: np.ndarray) -> np.ndarray:
+        v = emb / np.linalg.norm(emb, axis=-1, keepdims=True) - self.mean
+        return v / np.linalg.norm(v, axis=-1, keepdims=True)
+
+
+def load_gallery(data_dir: Path) -> CenteredRetriever:
     g = pd.read_csv(data_dir / "gallery.csv")
     emb = np.stack(g.embedding.map(lambda s: np.asarray(json.loads(s), dtype=np.float32)))
-    emb = emb / np.linalg.norm(emb, axis=1, keepdims=True)  # cosine over mean embeddings
-    return StubRetriever(emb, g.label.to_numpy(), g.image_path.tolist())
+    return CenteredRetriever(emb, g.label.to_numpy(), g.image_path.tolist(), np.load(data_dir / "embedding_mean.npy"))
 
 
 class SupportGate:
@@ -326,6 +345,8 @@ def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path
         "embedding": gallery.vec.map(lambda v: json.dumps(v.tolist())),
     }).to_csv(out / "gallery.csv", index=False)
 
+    train = np.stack(emb_df[emb_df.split == "train"].vec)
+    np.save(out / "embedding_mean.npy", (train / np.linalg.norm(train, axis=1, keepdims=True)).mean(axis=0))
     clf = MayumiClassifier(out / "classifier.pkl")
     retriever = load_gallery(out)
     gate = build_support_gate(emb_df, out, commit)
@@ -369,7 +390,9 @@ def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path
         "attribution": ATTRIBUTION,
         "bach": {"threshold": threshold, "uncertainty": "Ashley's assess_uncertainty (ashley-uncertainty)",
                  "support": f"Ashley's reference-support gate (main), limit {gate.config['threshold']:.4f}",
-                 "retrieval": "stub cosine top-k (Felix's module pending)", "gallery_per_class": per_class},
+                 "retrieval": "stub centered-cosine top-k (Felix's module pending)", "gallery_per_class": per_class},
+        "similarity_note": ("Similarity: cosine after removing what all training images have in common "
+                            "(1 = same, 0 = unrelated, below 0 = less alike than average)."),
     }
     stats = case_stats(cases)
     n_ref, n_val = len(gate.index.image_ids), gate.config["validation_count"]
@@ -406,7 +429,7 @@ def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path
 
 
 def input_robustness(tz: zipfile.ZipFile, photos: list[str], embedder: QuiltEmbedder, clf: MayumiClassifier,
-                     retriever: StubRetriever, threshold: float, gate: SupportGate) -> dict:
+                     retriever: CenteredRetriever, threshold: float, gate: SupportGate) -> dict:
     """Same challenge photos, changed the way uploads often are: does the suggestion move, and is it caught?"""
     def jpeg(img: Image.Image) -> Image.Image:
         buf = io.BytesIO()
