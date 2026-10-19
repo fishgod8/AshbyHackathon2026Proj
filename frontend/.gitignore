@@ -17,3 +17,6 @@ ui/data_bach/
 ui/mock_data/
 results/
 ui/screenshots/
+ui/data_breakhis/
+.venv-modal/
+*.svs

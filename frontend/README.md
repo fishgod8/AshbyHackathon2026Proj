@@ -1,6 +1,9 @@
 # Pathology Assistant: web UI + integration (Bowen)
 
-A Gradio workbench that runs the team's modules end to end on BACH breast histology:
+Live: https://bowenx307--pathology-assistant-web.us-east.modal.run (sleeps when idle; the first visit takes
+about half a minute to wake).
+
+A Gradio workbench that runs the team's modules end to end on BACH breast histology (and BreakHis, below):
 
 ```
 H&E image (any size from 224 x 224; BACH photos are 2048 x 1536)
@@ -14,7 +17,7 @@ H&E image (any size from 224 x 224; BACH photos are 2048 x 1536)
  -> background PubMed papers for the top two candidates (folded), AI-screened, quotes verified verbatim
 ```
 
-Pages: **Lookup** (upload or pick an image: suggestion, why, suggested next step, side-by-side
+Pages: **Slide view** (BACH, see below), **Lookup** (upload or pick an image: suggestion, why, suggested next step, side-by-side
 references per candidate, background papers) and **Evidence** (when "confident" can be trusted, review checks compared,
 what happens when the input changes). Queue and Review pages exist but are hidden for the demo
 (`--show-review`).
@@ -40,6 +43,52 @@ a function that takes one 512-dim embedding of a new image (Mayumi's QuiltNet, m
 searches her `bach/image_embeddings.csv` rows with `split == "train"` (320 images), optionally filtered
 to one class, and returns the k most similar as `[{image_id, label, score}]`. The gallery must be in the
 same embedding space as the query (same model, same patching), or the scores are meaningless.
+
+## Slide view (pathologist feedback, 10/18)
+
+Pathologists read the whole slide first and zoom in only where needed. The Slide view shows a BACH whole-slide
+image with a map of where to look first; clicking a spot shows that patch, where it ranks within the slide, its 5
+most similar confirmed training patches and, on annotated slides, what the experts drew there. **Slides are only
+shown and evaluated, never trained on**; training stays on patches and photos.
+
+- Model: Mayumi's single-patch classifier (Normal / Benign / InSitu / Invasive from one 224 x 224 QuiltNet patch
+  embedding; 92.5% on BACH validation, 87.5% on test, as the mean of 12 patches per photo). Her file
+  `bach_single_patch_classifier.pkl` goes to `ui/data_bach/patch_classifier.pkl` (not committed).
+- Patches are cut at the photos' physical size (224 px x 0.42 um = 94 um, so 188 px at the slides' 0.5 um/px),
+  embedded with QuiltNet in their scanned colors, scored, then averaged over 5 x 5 neighboring patches. The map
+  colors the most suspicious 20% of each slide: a rank within the slide, because absolute probabilities do not
+  carry over from microscope photos to scans (at a 0.5 cut, most tissue is flagged).
+- Checked against expert annotations (`src/slide_eval.py`, BACH annotated training slides, Aperio XML; each patch
+  labeled by the region under its center; unannotated tissue counts as not cancer). AUC, cancer vs other tissue:
+
+  | Slide | Role | Cancer share | Cancer in top 20% | AUC | Photo model AUC |
+  |---|---|---|---|---|---|
+  | A01 | settings chosen | 29% | 55% | 0.75 | 0.56 |
+  | A08 | settings chosen | 7% | 16% | 0.73 | 0.56 |
+  | A09 | settings chosen | 60% | 95% | 0.85 | 0.76 |
+  | A02 | unseen | 3% | 3% | 0.58 | 0.63 |
+  | A03 | unseen | 13% | 24% | 0.72 | 0.79 |
+
+  Per-slide color normalization (Reinhard) made it worse (A01 0.66 to 0.59), so it is off. Useful as "where to
+  look first", not as a detector; the photo-level model did better on the two unseen slides, so the model for
+  slides is still open.
+
+```sh
+ui/.venv/bin/python -m src.bach_raw                 # Mayumi's split photos, original TIFFs (6.9 GB)
+ui/.venv/bin/python -m src.patches build            # patch library: 4,800 patch embeddings + training crops
+ui/.venv/bin/python -m src.slide_eval --slides A01 A08 A09 --export   # needs data/bach_wsi_annotated/*.svs + .xml
+ui/.venv/bin/python -m src.slide_eval --slides A02 A03 --out data/slide_eval_holdout
+ui/.venv/bin/python -m src.slide_eval --validation data/slide_eval/results.json data/slide_eval_holdout/results.json
+```
+
+## BreakHis (second dataset)
+
+`src/breakhis.py build` builds `ui/data_breakhis/` from Mayumi's BreakHis patch embeddings (6 patches per
+700 x 460 image, 82 patients, patient-level split): a temporary benign/malignant classifier with her recipe,
+Ashley's checks, all 4,967 training images as the gallery. On 14 unseen test patients: accuracy 79.9%; one
+fibroadenoma patient is wrong on 119 of 120 images at 98% mean confidence, and neither check catches it. BACH and
+BreakHis cannot share a gallery or classifier (a BreakHis-trained classifier gets 48% on BACH). `ui/main.py`
+serves both behind a BACH | BreakHis switch.
 
 ## Suggested next step (pathologist feedback, 10/18)
 
@@ -67,9 +116,10 @@ ui/.venv/bin/python -m src.bach build --out ui/data_bach --per-class 80 \
 ui/.venv/bin/python -m src.literature --data ui/data_bach --terms ui/literature_terms_bach.json --context breast
 ui/.venv/bin/python -m src.screen_literature --data ui/data_bach
 
-# Local app, or a temporary public link served from this machine
-cd ui && .venv/bin/python app.py --data data_bach --live
+# Local app (both datasets), a temporary public link, or the permanent Modal deployment
+cd ui && .venv/bin/python main.py --data data_bach data_breakhis --live --session-decisions
 deploy/share_local.sh                               # prints a *.gradio.live URL
+modal deploy deploy/modal_app.py                    # bakes code, data folders and QuiltNet into the image
 ```
 
 Without BACH data: `ui/.venv/bin/python ui/make_mock_data.py` then `cd ui && .venv/bin/python app.py`.
@@ -104,5 +154,6 @@ earlier prototype on CRC-100K with stub models.
 
 No data is committed (`ui/data_*` is git-ignored). BACH images: ICIAR 2018 Grand Challenge
 (Aresta et al., Medical Image Analysis 2019; Zenodo 3632035), CC BY-NC-ND: credit, non-commercial,
-no modification; the app shows whole images with attribution. Only microscopy photos are used,
-never the whole-slide images. Literature: PubMed (NCBI). Research demo; not for clinical use.
+no modification; the app shows whole images with attribution. Models are trained only on microscopy photos and
+their patches; whole-slide images are shown and evaluated, never trained on. BreakHis: Spanhol et al., IEEE TBME
+2016, non-commercial research use. Literature: PubMed (NCBI). Research demo; not for clinical use.

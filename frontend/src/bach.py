@@ -57,6 +57,7 @@ CLASS_NAMES = {"Normal": "Normal tissue", "Benign": "Benign lesion",
 # Confidence threshold, raised from Ashley's provisional 0.7 (agreed with her 10/18): the lowest value that sends
 # every validation error to review on Mayumi's 40 validation images (0.7 caught 6 of 8, 0.9 caught 8 of 8).
 DEFAULT_THRESHOLD = 0.9
+ASHLEY_FIRST_THRESHOLD = 0.7  # kept for the Evidence comparison
 SUPPORT_PERCENTILE = 95  # Ashley's gate rule: flag if reference_distance > validation 95th percentile
 
 # Ashley's reference-support module fixes EMBEDDING_DIMENSION = 1024 (MUSK). QuiltNet gives 512, so we set the
@@ -72,32 +73,36 @@ ATTRIBUTION = (
 
 # ---- Image -> embedding (Mayumi's patching, official QuiltNet adapter) ----
 
-def patch_boxes(width: int, height: int) -> list[tuple[int, int, int, int]]:
-    """The 12 patch positions of prepare_bach.py: 3 rows x 4 columns, spread over the image."""
+def patch_boxes(width: int, height: int, rows: int = 3, cols: int = 4) -> list[tuple[int, int, int, int]]:
+    """Mayumi's patch positions: rows x cols crops of 224, spread evenly from edge to edge.
+
+    BACH (prepare_bach.py): 3 x 4 on 2048 x 1536. BreakHis: 2 x 3 on 700 x 460 (checked against her patch
+    embeddings, cosine 1.00000).
+    """
     boxes = []
-    for row in range(3):
-        for col in range(4):
-            x = round((width - 224) * col / 3)
-            y = round((height - 224) * row / 2)
+    for row in range(rows):
+        for col in range(cols):
+            x = round((width - 224) * col / max(cols - 1, 1))
+            y = round((height - 224) * row / max(rows - 1, 1))
             boxes.append((x, y, x + 224, y + 224))
     return boxes
 
 
 class QuiltEmbedder:
-    def __init__(self, device: str = "cpu") -> None:
+    def __init__(self, device: str = "cpu", grid: tuple[int, int] = (3, 4)) -> None:
         import open_clip
         import torch
 
-        self.torch, self.device = torch, device
+        self.torch, self.device, self.grid = torch, device, grid
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(QUILTNET)
         self.model = self.model.to(device).eval()
 
     def image_embedding(self, image: Image.Image) -> np.ndarray:
-        """Mean of the 12 L2-normalized patch embeddings (what Mayumi's classifier was trained on)."""
+        """Mean of the L2-normalized patch embeddings (what Mayumi's classifier was trained on)."""
         img = image.convert("RGB")
         if min(img.size) < MIN_SIDE:
             raise ValueError(f"Image must be at least {MIN_SIDE} × {MIN_SIDE} pixels; got {img.size[0]} × {img.size[1]}.")
-        batch = self.torch.stack([self.preprocess(img.crop(b)) for b in patch_boxes(*img.size)]).to(self.device)
+        batch = self.torch.stack([self.preprocess(img.crop(b)) for b in patch_boxes(*img.size, *self.grid)]).to(self.device)
         with self.torch.no_grad():
             emb = self.model.encode_image(batch)
             emb = emb / emb.norm(dim=-1, keepdim=True)
@@ -183,9 +188,10 @@ class CenteredRetriever(StubRetriever):
     class -0.045) without changing the ranking much. Mayumi's classifier does the same through its StandardScaler.
     """
 
-    def __init__(self, emb: np.ndarray, labels: np.ndarray, paths: list[str], mean: np.ndarray) -> None:
+    def __init__(self, emb: np.ndarray, labels: np.ndarray, paths: list[str], mean: np.ndarray,
+                 groups: np.ndarray | None = None, details: np.ndarray | None = None) -> None:
         self.mean = mean
-        super().__init__(self.center(emb), labels, paths)
+        super().__init__(self.center(emb), labels, paths, groups, details)
 
     def center(self, emb: np.ndarray) -> np.ndarray:
         v = emb / np.linalg.norm(emb, axis=-1, keepdims=True) - self.mean
@@ -193,9 +199,12 @@ class CenteredRetriever(StubRetriever):
 
 
 def load_gallery(data_dir: Path) -> CenteredRetriever:
+    """gallery.csv: image_path, label, embedding (JSON), and optionally patient (group) and subtype (detail)."""
     g = pd.read_csv(data_dir / "gallery.csv")
     emb = np.stack(g.embedding.map(lambda s: np.asarray(json.loads(s), dtype=np.float32)))
-    return CenteredRetriever(emb, g.label.to_numpy(), g.image_path.tolist(), np.load(data_dir / "embedding_mean.npy"))
+    return CenteredRetriever(emb, g.label.to_numpy(), g.image_path.tolist(), np.load(data_dir / "embedding_mean.npy"),
+                             groups=g["patient"].to_numpy() if "patient" in g else None,
+                             details=g["subtype"].to_numpy() if "subtype" in g else None)
 
 
 class SupportGate:
@@ -207,7 +216,8 @@ class SupportGate:
         self.config = json.loads((support_dir / "reference_gate_config.json").read_text())
 
 
-def quilt_settings(commit: str) -> dict:
+def quilt_settings(commit: str, grid: tuple[int, int] = (3, 4),
+                   source: str = "bach/image_embeddings.csv (mayumi-model @ {commit})") -> dict:
     """Extractor settings in Ashley's config format (she checks reference and gate configs match)."""
     from huggingface_hub import try_to_load_from_cache
 
@@ -217,16 +227,16 @@ def quilt_settings(commit: str) -> dict:
         "model": "openclip:wisdomik/QuiltNet-B-32",
         "checkpoint": QUILTNET,
         "checkpoint_sha256": blob if len(blob) == 64 else "unknown",  # Hugging Face names LFS blobs by sha256
-        "preprocessing": {"patches": "12 crops of 224x224 on a 3x4 grid over the image (prepare_bach.py)",
+        "preprocessing": {"patches": f"{grid[0] * grid[1]} crops of 224x224 on a {grid[0]}x{grid[1]} grid over the image",
                           "transform": "open_clip QuiltNet-B-32 preprocess"},
-        "extraction": {"per_patch": "encode_image, L2-normalized", "pooling": "mean of the 12 patch embeddings",
+        "extraction": {"per_patch": "encode_image, L2-normalized", "pooling": f"mean of the {grid[0] * grid[1]} patch embeddings",
                        "output_dtype": "float32", "embedding_dimension": QUILT_DIM},
-        "software_versions": {"embeddings": f"Mayumi's bach/image_embeddings.csv (mayumi-model @ {commit})"},
+        "software_versions": {"embeddings": "Mayumi's " + source.format(commit=commit)},
     }
 
 
-def build_support_gate(emb_df: pd.DataFrame, out: Path, commit: str) -> SupportGate:
-    """Ashley's rule on Mayumi's split: reference = her 320 training images, limit from her 40 validation images."""
+def build_support_gate(emb_df: pd.DataFrame, out: Path, commit: str, settings: dict | None = None) -> SupportGate:
+    """Ashley's rule on Mayumi's split: reference = her training images, limit from her validation images."""
     rows = emb_df[emb_df.split.isin(["train", "val"])].reset_index(drop=True)
     manifest = pd.DataFrame({"image_id": rows.image_id, "row_index": range(len(rows)), "label": rows.label,
                              "split": rows.split.map({"train": "reference", "val": "validation"})})
@@ -235,7 +245,7 @@ def build_support_gate(emb_df: pd.DataFrame, out: Path, commit: str) -> SupportG
     d.mkdir(exist_ok=True)
     np.save(d / "embeddings.npy", matrix)
     manifest.to_csv(d / "split_manifest.csv", index=False)
-    settings = quilt_settings(commit)
+    settings = settings or quilt_settings(commit)
     (d / "extraction_config.json").write_text(json.dumps(settings, indent=2))
 
     index = reference_support.load_reference_index(d / "embeddings.npy", d / "split_manifest.csv",
@@ -245,7 +255,7 @@ def build_support_gate(emb_df: pd.DataFrame, out: Path, commit: str) -> SupportG
     dist = np.array([s.reference_distance for s in scores])
     threshold = float(np.percentile(dist, SUPPORT_PERCENTILE))  # NumPy default (linear), as Ashley's config
     config = {
-        "purpose": "Ashley's reference-support gate on BACH (QuiltNet, Mayumi's split); built by src/bach.py.",
+        "purpose": f"Ashley's reference-support gate on {out.name} (QuiltNet, Mayumi's split); built by src/bach.py.",
         "distance": "cosine distance = 1 - cosine similarity after L2 normalization",
         "k": reference_support.K_NEIGHBORS,
         "reference_split": "reference",
@@ -352,13 +362,15 @@ def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path
     gate = build_support_gate(emb_df, out, commit)
     order = list(tests.index)
     random.Random(seed).shuffle(order)  # case ids must not reveal the class (file names do: b/is/iv/n)
-    cases, conf_only = [], []  # conf_only: the same cases with the confidence check alone, for the comparison
+    cases, conf_only, first_threshold = [], [], []  # same cases: confidence check alone; Ashley's first 0.7
     for k, idx in enumerate(order, start=1):
         row = tests.loc[idx]
         case = {"case_id": f"case_{k:03d}", "image": f"images/{Path(row.image_id).stem}.jpg",
                 "true_label": row.label, "source_image": row.image_id}
         cases.append({**case, **analyze_embedding(row.vec, clf, retriever, threshold, gate, row.image_id)})
         conf_only.append({**case, **analyze_embedding(row.vec, clf, retriever, threshold)})
+        first_threshold.append({**case, **analyze_embedding(row.vec, clf, retriever, ASHLEY_FIRST_THRESHOLD, gate,
+                                                             row.image_id)})
 
     examples, robustness = [], None
     if test_zip:
@@ -398,13 +410,14 @@ def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path
     n_ref, n_val = len(gate.index.image_ids), gate.config["validation_count"]
     evidence = {
         "source": (f"Mayumi's held-out test images ({len(cases)}). Ashley's two review checks: confidence below "
-                   f"{threshold:.0%} (provisional) or an unfamiliar image. Real team models; small test set."),
+                   f"{threshold:.0%} (chosen on Mayumi's validation images) or an unfamiliar image. Real team models; "
+                   "small test set."),
         "alpha": None,
         **stats,
         "risk_coverage": risk_coverage(cases),
-        "models_title": "Review checks compared",
-        "models": [{"model": f"Confidence below {threshold:.0%}", **case_stats(conf_only)},
-                   {"model": "Confidence or unfamiliar image", **stats}],
+        "models_title": "Review threshold compared",
+        "models": [{"model": f"{ASHLEY_FIRST_THRESHOLD:.0%}, Ashley's first value", **case_stats(first_threshold)},
+                   {"model": f"{threshold:.0%}, chosen on validation images", **stats}],
         **({"robustness": robustness} if robustness else {}),
         "split_note": (f"Test cases: {len(cases)} BACH images Mayumi held out (10 per class). BACH has no patient IDs, "
                        "so her split is by image and results may be optimistic. Unfamiliar image: the "

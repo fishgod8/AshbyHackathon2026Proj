@@ -1,0 +1,45 @@
+{
+  "_comment": "Suggested next step for BreakHis (benign vs malignant). DRAFT: reuses the verified sources of the BACH benign vs invasive pair (BreakHis malignant subtypes are invasive carcinomas). Every entry must be confirmed by a pathologist; see docs/next_steps_review.md.",
+  "status": "draft",
+  "status_note": "Draft from the papers cited; not yet reviewed by a pathologist.",
+  "reviewed_by": null,
+  "general": [
+    {
+      "action": "Look at more of the lesion: other fields, or deeper levels from the block"
+    },
+    {
+      "action": "Ask a colleague for a second opinion"
+    }
+  ],
+  "pairs": [
+    {
+      "classes": [
+        "Benign",
+        "Malignant"
+      ],
+      "tests": [
+        {
+          "kind": "stain",
+          "name": "p63 with smooth muscle myosin heavy chain or calponin",
+          "read": "Benign mimics such as sclerosing lesions keep a myoepithelial layer around their glands; invasive carcinoma lacks it.",
+          "sources": [
+            {
+              "pmid": "23486609",
+              "citation": "Lee AH et al., J Clin Pathol 2013",
+              "title": "Use of immunohistochemistry in the diagnosis of problematic breast lesions.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/23486609/",
+              "quote": "Myoepithelial markers, such as smooth muscle actin, smooth muscle myosin heavy chain and p63, are useful for distinguishing invasive carcinoma from sclerosing lesions and ductal carcinoma in situ (DCIS), and in the classification of papillary lesions."
+            },
+            {
+              "pmid": "12502930",
+              "citation": "Werling RW et al., Am J Surg Pathol 2003",
+              "title": "Immunohistochemical distinction of invasive from noninvasive breast lesions: a comparative study of p63 versus calponin and smooth muscle myosin heavy chain.",
+              "url": "https://pubmed.ncbi.nlm.nih.gov/12502930/",
+              "quote": "Identification of myoepithelial cells using antibodies to cytoskeletal proteins, such as smooth muscle myosin heavy chain (SMM-HC) and calponin, can play an important role in distinguishing invasive carcinoma from its histologic mimics."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

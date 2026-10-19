@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -113,11 +114,23 @@ def export_png(src: str, dest: Path) -> None:
 
 
 def localize_images(refs: list[dict], img_dir: Path) -> list[dict]:
-    """Copy referenced gallery tiles next to the UI data; rewrite paths relative to it."""
+    """Copy referenced gallery tiles next to the UI data; rewrite paths relative to it.
+
+    Browser-ready files (JPEG, PNG) are copied as they are: re-encoding a JPEG as PNG makes it 3 to 5 times
+    larger, and big files load unreliably through the share tunnel. Only TIFF is converted to PNG.
+    """
     out = []
     for r in refs:
-        name = f"ref_{Path(r['image']).stem}.png"
-        export_png(r["image"], img_dir / name)
+        src = Path(r["image"])
+        if src.suffix.lower() in (".jpg", ".jpeg", ".png"):
+            name = f"ref_{src.stem}{src.suffix.lower()}"
+            if not (img_dir / name).exists():
+                tmp = img_dir / f".{name}.part"
+                shutil.copyfile(src, tmp)
+                tmp.replace(img_dir / name)  # atomic: a request never sees a half-written file
+        else:
+            name = f"ref_{src.stem}.png"
+            export_png(src, img_dir / name)
         out.append({**r, "image": f"images/{name}", "score": round(r["score"], 3)})
     return out
 

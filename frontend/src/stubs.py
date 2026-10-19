@@ -55,9 +55,11 @@ class StubRetriever:
     """Cosine top-k over L2-normalized gallery embeddings (dot product)."""
 
     def __init__(
-        self, emb: np.ndarray, labels: np.ndarray, paths: list[str], groups: np.ndarray | None = None
+        self, emb: np.ndarray, labels: np.ndarray, paths: list[str], groups: np.ndarray | None = None,
+        details: np.ndarray | None = None,
     ) -> None:
-        self.emb, self.labels, self.paths, self.groups = emb, labels, paths, groups
+        # groups: patient or slide id (exclude the query's own); details: a finer label shown with the image
+        self.emb, self.labels, self.paths, self.groups, self.details = emb, labels, paths, groups, details
 
     def retrieve(
         self, query_emb: np.ndarray, k: int = 5, label: str | None = None, exclude_group: str | None = None
@@ -71,6 +73,8 @@ class StubRetriever:
         scores = self.emb[idx] @ query_emb
         order = np.argsort(scores)[::-1][:k]
         return [
-            {"image": self.paths[idx[i]], "label": str(self.labels[idx[i]]), "score": float(scores[i])}
+            {"image": self.paths[idx[i]], "label": str(self.labels[idx[i]]), "score": float(scores[i]),
+             **({"group": str(self.groups[idx[i]])} if self.groups is not None else {}),
+             **({"detail": str(self.details[idx[i]])} if self.details is not None else {})}
             for i in order
         ]

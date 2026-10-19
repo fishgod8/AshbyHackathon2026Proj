@@ -21,6 +21,7 @@ import json
 import random
 import sys
 import tempfile
+from collections import Counter
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -43,6 +44,8 @@ parser.add_argument(
     help="keep sign-offs per browser session only (public demo); default also saves them to decisions.json",
 )
 parser.add_argument("--share", action="store_true", help="also create a temporary public *.gradio.live link")
+parser.add_argument("--embedded", action="store_true",
+                    help="rendered inside ui/site.py (dataset switch): the site draws the page header")
 parser.add_argument("--show-review", action="store_true",
                     help="show the Queue and Review tabs (hidden for now; Lookup and Evidence are the demo)")
 args, _ = parser.parse_known_args()
@@ -78,7 +81,7 @@ DECISIONS_PATH = None if args.session_decisions else DATA_DIR / "decisions.json"
 
 # Live analysis for Lookup: same integration layer as the precomputed cases.
 LIVE = None
-LIVE_CACHE = Path(tempfile.gettempdir()) / "ashby_live"  # PNG copies of retrieved gallery tiles
+LIVE_CACHE = Path(tempfile.gettempdir()) / "ashby_live" / DATA_DIR.name  # copies of retrieved gallery images
 if args.live:
     sys.path.insert(0, str(REPO))
     from src.analyze import localize_result
@@ -88,11 +91,53 @@ if args.live:
         from src.bach import BachLiveAnalyzer
 
         LIVE = BachLiveAnalyzer(DATA_DIR)
+    elif META.get("pipeline") == "breakhis":
+        # BreakHis: Mayumi's 6-patch embeddings + a temporary classifier + Ashley's checks (src/breakhis.py).
+        from src.breakhis import BreakHisLiveAnalyzer
+
+        LIVE = BreakHisLiveAnalyzer(DATA_DIR)
     else:
         from src.live import LiveAnalyzer
 
         LIVE = LiveAnalyzer(Path(args.live))
     (LIVE_CACHE / "images").mkdir(parents=True, exist_ok=True)
+
+# Slide view (BACH): slides precomputed by src/slides.py (shown only, never used for training); photos live.
+SLIDES, SLIDE_LIB, SLIDE_PHOTOS = {}, None, []
+if LIVE is not None and (DATA_DIR / "patches" / "index.csv").exists():
+    import numpy as np
+    from PIL import Image as PILImage
+
+    from src import slides as slide_tools
+    from src.patches import PatchLibrary
+
+    SLIDE_LIB = PatchLibrary(DATA_DIR)
+    SLIDE_CLF = slide_tools.patch_classifier(DATA_DIR)  # Mayumi's single-patch model; Lookup keeps her photo model
+    for _m in sorted((DATA_DIR / "slides").glob("*/meta.json")):
+        _meta = json.loads(_m.read_text())
+        SLIDES[_meta["name"]] = _meta
+    SLIDE_PHOTOS = sorted(p for p in (DATA_DIR / "examples").glob("*") if p.suffix in (".png", ".jpg", ".webp"))
+SLIDE_VIEW = SLIDE_LIB is not None and bool(SLIDES or SLIDE_PHOTOS)
+_sv_val = DATA_DIR / "slides" / "validation.json"
+SLIDE_VALIDATION = json.loads(_sv_val.read_text()) if SLIDE_VIEW and _sv_val.exists() else []
+SLIDE_VALIDATION_NOTE = (
+    "Annotated training slides from the same challenge, compared patch by patch with the regions pathologists drew; "
+    "never trained on. Settings were chosen on the first three and checked unchanged on the others. AUC: how often a "
+    "cancer patch scores above a non-cancer one (0.5 is chance, 1 is perfect).")
+
+
+def slide_validation_sentence(rows):
+    """What the unseen slides showed, from the numbers: weakest slide, and where the photo-level model did better."""
+    unseen = [r for r in rows if r["role"] == "Unseen check"]
+    if not unseen:
+        return ""
+    worst = min(unseen, key=lambda r: r["auc"])
+    text = f"On the unseen slides the map was weaker ({worst['slide']}: {worst['auc']:.2f})"
+    better = [r for r in unseen if r.get("auc_photo_model", 0) > r["auc"]]
+    if better:
+        text += (", and Mayumi's photo-level model scored higher there (" +
+                 ", ".join(f"{r['slide']} {r['auc_photo_model']:.2f}" for r in better) + ")")
+    return text + ": a first attempt at where to look, not a detector."
 
 # Risk value from the uncertainty module -> (label, css tone, sort order). Unknown values sort with "review".
 RISK = {
@@ -364,14 +409,18 @@ def verdict_html(c, mode="case", show_truth=False):
     alts = [x for x in c["candidate_set"] if x != pred]
     agree, n = sum(s["label"] == pred for s in c["similar_cases"]), len(c["similar_cases"])
     support = c.get("support")
-    if is_unfamiliar(c) and mode == "lookup":  # no class, no comparisons: only the warning and what to do
+    # mode "patch": one patch of a slide or photo (Slide view); its references are patches, not whole images
+    unit, units, noun = ("patch", "patches", "patches") if mode == "patch" else (UNIT, UNITS, REF_NOUN)
+    label = {"case": "Suggested", "lookup": "Closest match", "patch": "This patch"}.get(mode, "Closest match")
+    if is_unfamiliar(c) and mode in ("lookup", "patch"):  # no class, no comparisons: only the warning and what to do
+        todo = ("Look at this patch directly; the AI's reading is not reliable here." if mode == "patch" else
+                "Try the original photo: uncompressed, at full scanner resolution.")
         return (
-            '<div class="verdict"><div class="label">Result</div>'
-            f'<div class="verdict-main">Unfamiliar {UNIT}</div>'
-            f'<div class="note note-warn">It is farther from the training {UNITS} than {support["percentile"]}% of '
-            f"validation {UNITS} were, so the AI gives no class for it. Compression, another magnification or "
-            "another tissue type can cause this.</div>"
-            '<div class="next">Try the original photo: uncompressed, at full scanner resolution.</div></div>'
+            f'<div class="verdict"><div class="label">{label}</div>'
+            f'<div class="verdict-main">Unfamiliar {unit}</div>'
+            f'<div class="note note-warn">It is farther from the training {units} than {support["percentile"]}% of '
+            f"validation {units} were, so the AI gives no class for it. Compression, another magnification or "
+            f'another tissue type can cause this.</div><div class="next">{todo}</div></div>'
         )
     if is_unfamiliar(c):  # review queue: the class is not the headline when the input is outside what the model knows
         parts = [
@@ -383,18 +432,24 @@ def verdict_html(c, mode="case", show_truth=False):
         ]
     else:
         parts = [
-            f'<div class="label">{"Suggested" if mode == "case" else "Closest match"}</div>',
+            f'<div class="label">{label}</div>',
             f'<div class="verdict-main">{escape(full_name(pred))}</div>',
             f'<div class="verdict-conf">{probs[pred]:.0%} confidence</div>',
         ]
     if alts:
         alt_txt = ", ".join(f"<b>{escape(full_name(a))}</b> {probs.get(a, 0):.0%}" for a in alts)
         parts.append(f'<div class="verdict-alt"><span class="muted">Could also be</span> {alt_txt}</div>')
-    tone = " note-warn" if agree * 2 < n else ""
-    parts.append(f'<div class="note{tone}">{agree} of the {n} most similar confirmed {REF_NOUN} are {escape(pred)}.</div>')
-    steps = next_steps_html(c) if c["risk"] != "confident" else ""
+    if n == 5 and agree <= LOW_AGREE:  # evidence, not a new review rule: the similar images point elsewhere
+        then = (f" In the test set, the AI was right only {LOW_AGREE_RIGHT:.0%} of the time when this happened."
+                if LOW_AGREE_RIGHT is not None and mode != "patch" else "")  # that rate is per image, not per patch
+        which = (f"None of the {n} most similar confirmed {noun} are" if agree == 0 else
+                 f"Only {agree} of the {n} most similar confirmed {noun} {'is' if agree == 1 else 'are'}")
+        parts.append(f'<div class="note note-warn"><b>Mixed evidence.</b> {which} {escape(full_name(pred))}.{then}</div>')
+    steps = next_steps_html(c) if c["risk"] != "confident" and mode != "patch" else ""  # Slide view stays light
     if steps:  # flagged differential: what to do next comes before comparing pictures
         parts.append(steps)
+    elif mode == "patch":
+        parts.append('<div class="next">The most similar confirmed patches are below. A pointer, not a diagnosis.</div>')
     elif mode == "lookup":
         parts.append('<div class="next">Compare the candidates below. Reference lookup, not a diagnosis.</div>')
     elif c["risk"] == "confident":
@@ -433,7 +488,8 @@ def compare_updates(c, base):
             label, refs = items[i]
             role = "suggested" if label == c["prediction"] else "alternative"
             updates.append(gr.Gallery(
-                value=to_gallery(refs, base, lambda s: f"similarity {s['score']:.2f}"),
+                value=to_gallery(refs, base, lambda s: f"{s['detail']} {s['score']:.2f}" if s.get("detail")
+                                 else f"similarity {s['score']:.2f}"),
                 label=f"{full_name(label)}, {role}", visible=True,
             ))
         else:
@@ -461,22 +517,32 @@ def is_unfamiliar(c):
 
 def why_html(c, mode="case"):
     """Shown under the decision: the uncertainty module's reason and the top class probabilities."""
-    if is_unfamiliar(c) and mode == "lookup":  # distance only; probabilities would suggest a class
+    if is_unfamiliar(c) and mode in ("lookup", "patch"):  # distance only; probabilities would suggest a class
         return (f'<div class="why"><div class="why-title">Why it was flagged</div>'
                 f'<p class="why-reason">{escape(c["support"]["reason"])}</p></div>')
-    if mode == "lookup":
+    if mode == "patch":
+        title = "Why this reading"
+    elif mode == "lookup":
         title = "Why this match"
     elif c["risk"] == "confident":
         title = "Why it was cleared"
     else:
         title = "Why it was flagged"
+    pred = c["prediction"]
+    agree, n = sum(s["label"] == pred for s in c["similar_cases"]), len(c["similar_cases"])
+    bars = "" if mode in ("lookup", "patch") else prob_bars_html(c, top_n=4)  # shown in the result column there
+    noun = "patches" if mode == "patch" else REF_NOUN
+    patients = {s["group"] for s in c["similar_cases"] if s.get("group")}
+    from_patients = ("" if not patients else " They all come from one patient." if len(patients) == 1
+                     else f" They come from {len(patients)} different patients.")
     return (f'<div class="why"><div class="why-title">{title}</div>'
-            f'<p class="why-reason">{escape(c["reason"])}</p>{prob_bars_html(c, top_n=4)}</div>')
+            f'<p class="why-reason">{escape(c["reason"])} {agree} of the {n} most similar confirmed {noun} '
+            f'{"is" if agree == 1 else "are"} {escape(pred)}.{from_patients}</p>{bars}</div>')
 
 
 def why_outputs(c, base, mode="case"):
     """(inline why block, nearest-neighbor gallery for the 'more similar' accordion)."""
-    neighbors = to_gallery(c["similar_cases"], base, lambda s: f"{s['label']} {s['score']:.2f}")
+    neighbors = to_gallery(c["similar_cases"], base, lambda s: f"{s.get('detail') or s['label']} {s['score']:.2f}")
     return why_html(c, mode), neighbors
 
 
@@ -560,6 +626,193 @@ LOOKUP_EMPTY = (
 )
 
 
+# ---- Slide view ----
+
+SV_LAYERS = {"Suspicious": "abnormal", "AI unsure": "unsure", "Experts": "annotation"}
+SV_PHOTO_WIDTH = 1200
+_SV_CACHE = {}
+EXPERT = {0: "not annotated (other tissue)", 1: "Benign", 2: "In situ carcinoma", 3: "Invasive carcinoma"}
+
+
+def sv_choices():
+    return ([f"Slide {name}" for name in SLIDES] +
+            [f"Photo {i} (BACH test)" for i in range(1, len(SLIDE_PHOTOS) + 1)])
+
+
+def sv_source(choice):
+    """(grid, base image, scale, stride, reader, annotation overlay or None) for a slide or photo; cached."""
+    if choice in _SV_CACHE:
+        return _SV_CACHE[choice]
+    if choice.startswith("Slide "):
+        name = choice.removeprefix("Slide ")
+        meta, folder = SLIDES[name], DATA_DIR / "slides" / name
+        z = np.load(folder / "grid.npz")
+        grid = {k: z[k] for k in z.files} | {"tile": meta["tile"], "meta": meta}
+        grid["rank"] = slide_tools.suspicion_rank(grid)  # scanned slides: relative, not absolute (see Evidence)
+        base = PILImage.open(folder / "overview.jpg").convert("RGB")
+        annotation = PILImage.open(folder / "annotation.png") if (folder / "annotation.png").exists() else None
+
+        def reader(i, folder=folder, meta=meta, grid=grid):
+            import openslide
+
+            with openslide.OpenSlide(str(folder / "slide.svs")) as sl:
+                return sl.read_region((int(grid["x"][i]), int(grid["y"][i])), 0, (meta["tile"],) * 2).convert("RGB")
+        entry = (grid, base, base.width / meta["width"], None, reader, annotation)
+    else:
+        img = PILImage.open(SLIDE_PHOTOS[int(choice.split(" ")[1]) - 1]).convert("RGB")
+        entry = sv_photo_entry(img)
+    _SV_CACHE[choice] = entry
+    return entry
+
+
+def sv_photo_entry(img):
+    grid = slide_tools.analyze_photo(img, LIVE.embedder, SLIDE_CLF, SLIDE_LIB, LIVE.threshold)
+    base = img.resize((SV_PHOTO_WIDTH, round(img.height * SV_PHOTO_WIDTH / img.width)))
+    reader = lambda i, img=img, grid=grid: img.crop((int(grid["x"][i]), int(grid["y"][i]),  # noqa: E731
+                                                    int(grid["x"][i]) + 224, int(grid["y"][i]) + 224))
+    return grid, base, SV_PHOTO_WIDTH / img.width, 112, reader, None
+
+
+def sv_layers(entry):
+    """Slides: suspicious + expert annotation (the classifier's own uncertainty means little on scans, see the
+    summary line). Photos: suspicious + AI unsure, as on the rest of the site."""
+    if "meta" in entry[0]:
+        return ["Suspicious"] + (["Experts"] if entry[5] is not None else [])
+    return ["Suspicious", "AI unsure"]
+
+
+def swatch(rgb, text):
+    return f'<span><i style="background:rgb{rgb}"></i>{escape(text)}</span>'
+
+
+def sv_summary_html(entry, layer):
+    """One count line, a legend for the layer on screen, and one plain sentence about how far to trust it."""
+    grid = entry[0]
+    n, slide = len(grid["x"]), "meta" in grid
+    if layer == "Experts":
+        legend = "".join(swatch(slide_tools.ANNOTATION_RGB[k], CLASS_NAMES.get(k, k)) for k in ("Benign", "InSitu", "Invasive"))
+    elif layer == "AI unsure":
+        legend = swatch(slide_tools.LOW_CONF_RGB, f"Low confidence, {np.mean(grid['low_conf']):.0%} of patches")
+        if not slide:
+            legend += swatch(slide_tools.UNFAMILIAR_RGB, f"Unfamiliar tissue, {np.mean(grid['unfamiliar']):.0%}")
+    elif slide:
+        legend = swatch(slide_tools.ABNORMAL_RGB, "Most suspicious 20% of this slide (darker = more suspicious)")
+    else:
+        legend = swatch(slide_tools.ABNORMAL_RGB, "Likely in situ or invasive carcinoma (50% or more)")
+    if slide and grid["meta"].get("validation"):
+        v = grid["meta"]["validation"]
+        trust = (f"Experts marked cancer in {v['cancer_share']:.0%} of this slide's tissue and in "
+                 f"{v['top20_cancer_share']:.0%} of its most suspicious 20%. A guide to where to look first. "
+                 "Slides are never used for training.")
+    elif slide:
+        trust = "A guide to where to look first. Slides are never used for training."
+    else:
+        trust = "Colors suggest where to look first; they are not a diagnosis."
+    what = f"{n:,} tissue patches" if slide else f"{n} overlapping patches"
+    return (f'<div class="sv-summary"><div class="sv-count">{what}</div><div class="hund-legend sv-legend">{legend}'
+            f'</div><p class="small muted sv-trust">{trust}</p></div>')
+
+
+SV_EMPTY = ('<div class="empty sv-empty"><div class="empty-title">Click a spot to inspect it</div><p class="lede">'
+            "You will see that patch enlarged, how suspicious it is, and the most similar confirmed patches.</p></div>")
+
+
+def sv_render(entry, layer, sel=None):
+    grid, base, scale, stride, _, annotation = entry
+    return slide_tools.render(base, grid, SV_LAYERS[layer], scale, stride, highlight=sel, annotation=annotation)
+
+
+def sv_open(choice, layer, entry):
+    layers = sv_layers(entry)
+    layer = layer if layer in layers else layers[0]
+    return (sv_render(entry, layer), sv_summary_html(entry, layer), {"choice": choice, "sel": None},
+            gr.Image(visible=False), SV_EMPTY, gr.HTML(visible=False), gr.Gallery(value=None, visible=False),
+            gr.Radio(choices=layers, value=layer))
+
+
+def sv_show(choice, layer):
+    return sv_open(choice, layer, sv_source(choice))
+
+
+def sv_upload(file, layer, state):
+    if file is None:
+        return (gr.skip(),) * 8
+    img = PILImage.open(file).convert("RGB")
+    if min(img.size) < 224:
+        gr.Warning("The photo must be at least 224 × 224 pixels.")
+        return (gr.skip(),) * 8
+    choice = f"Your photo ({img.width}×{img.height})"
+    _SV_CACHE[choice] = sv_photo_entry(img)
+    return sv_open(choice, layer, _SV_CACHE[choice])
+
+
+def sv_relayer(layer, state):
+    entry = sv_source(state["choice"])
+    return sv_render(entry, layer, state.get("sel")), sv_summary_html(entry, layer)
+
+
+def sv_patch_case(grid, i):
+    """One patch in the result format the Lookup blocks render."""
+    classes = [str(c) for c in grid["classes"]]
+    p = grid["probs"][i].astype(float)
+    order = np.argsort(p)[::-1]
+    pred, runner = classes[order[0]], classes[order[1]]
+    slide = "meta" in grid
+    low, unf = bool(grid["low_conf"][i]), bool(grid["unfamiliar"][i]) and not slide  # slides: said once, not per patch
+    emb = grid["emb"][i].astype(np.float32)
+    support = {"flagged": unf, "distance": round(float(grid["distance"][i]), 4), "threshold": SLIDE_LIB.gate.config["threshold"],
+               "k": SLIDE_LIB.gate.config["k"], "percentile": SLIDE_LIB.gate.config["percentile"]}
+    support["reason"] = (f"The 5th closest training patch is at cosine distance {support['distance']:.3f} "
+                         f"(review limit {support['threshold']:.3f}).")
+    conf_reason = (f"{pred} ({p[order[0]]:.0%}) is below the review threshold of {LIVE.threshold:.0%}; runner-up "
+                   f"{runner} ({p[order[1]]:.0%})." if low else
+                   f"{pred} scores {p[order[0]]:.0%}, at or above the review threshold of {LIVE.threshold:.0%}.")
+    return {"prediction": pred, "probabilities": {classes[j]: round(float(p[j]), 3) for j in order},
+            "candidate_set": [pred, runner] if low else [pred], "risk": "review" if (low or unf) else "confident",
+            "reason": f"{conf_reason} {support['reason']}", "support": support,
+            "similar_cases": SLIDE_LIB.similar(emb, k=5)}
+
+
+def sv_slide_verdict(grid, i, case):
+    """Slides: where the patch ranks within its slide, what its closest confirmed patches are and what the experts
+    drew there. The classifier's own confidence comes from microscope photos and does not carry over to scans."""
+    rank = grid["rank"][i]
+    hot = rank >= 1 - slide_tools.TOP_SHARE
+    sims = Counter(s["label"] for s in case["similar_cases"]).most_common()
+    parts = ['<div class="label">This patch</div>',
+             f'<div class="verdict-main">{"Suspicious area" if hot else "Not flagged"}</div>',
+             f'<div class="verdict-conf">More suspicious than {rank:.0%} of this slide\'s tissue</div>',
+             '<p class="sv-fact"><span class="muted">Most similar confirmed patches</span> '
+             + ", ".join(f"{n} {escape(CLASS_NAMES.get(lab, lab))}" for lab, n in sims) + "</p>"]
+    if "truth" in grid:
+        parts.append(f'<p class="sv-fact"><span class="muted">Expert annotation here</span> '
+                     f'{escape(EXPERT[int(grid["truth"][i])])}</p>')
+    return f'<div class="verdict">{"".join(parts)}</div>'
+
+
+def sv_click(evt: gr.SelectData, layer, state):
+    entry = sv_source(state["choice"])
+    grid, base, scale, stride, reader, _ = entry
+    i = slide_tools.patch_at(grid, evt.index[0] / scale, evt.index[1] / scale)
+    if i is None:
+        gr.Info("No tissue patch here. Click on the tissue.")
+        return (gr.skip(),) * 6
+    case = sv_patch_case(grid, i)
+    if "meta" in grid:
+        verdict = sv_slide_verdict(grid, i, case)
+        p = case["probabilities"][case["prediction"]]
+        inner = (f'<p class="small">The classifier alone reads {escape(full_name(case["prediction"]))} ({p:.0%}). '
+                 "It learned from microscope photos, and on scanned slides its confidence is not reliable, so the "
+                 "map ranks patches within the slide instead.</p>" + prob_bars_html(case, top_n=4))
+    else:
+        verdict = verdict_html(case, "patch")
+        inner = why_html(case, "patch") + ("" if is_unfamiliar(case) else prob_bars_html(case, top_n=4))
+    details = f'<details class="refs-fold sv-details"><summary>Details</summary>{inner}</details>'
+    similar = [(s["image"], s["label"]) for s in case["similar_cases"]]  # class only: five thumbnails in a narrow column
+    return (sv_render(entry, layer, i), {**state, "sel": i}, gr.Image(value=reader(i).resize((280, 280)), visible=True),
+            verdict, gr.HTML(value=details, visible=True), gr.Gallery(value=similar, visible=True))
+
+
 def lookup(image):
     """Uploaded tile -> live analysis -> same rendering as a queued case."""
     if image is None:
@@ -580,32 +833,29 @@ def lookup(image):
         hidden = [gr.Gallery(value=None, visible=False)] * N_COMPARE
         return (verdict_html(result, "lookup"), gr.HTML(value=why, visible=True), gr.HTML(visible=False), *hidden,
                 gr.HTML(visible=False), gr.Accordion(visible=False), [])
+    verdict = verdict_html(result, "lookup") + f'<div class="lk-probs">{prob_bars_html(result, top_n=4)}</div>'
     return (
-        verdict_html(result, "lookup"), gr.HTML(value=why, visible=True), gr.HTML(visible=True),
+        verdict, gr.HTML(value=why, visible=True), gr.HTML(visible=True),
         *compare_updates(result, LIVE_CACHE), references_update(result), gr.Accordion(visible=True), neighbors,
-    )
-
-
-def risk_coverage_sentence(points, at=70):
-    p = next(p for p in points if p["coverage"] >= at)
-    return (
-        f"Handling only the most confident **{p['coverage']:.0f}%** of {UNITS} automatically: error **{p['error']}%**, "
-        f"compared with {points[-1]['error']}% if every {UNIT} is handled automatically."
     )
 
 
 def model_table(models):
     return pd.DataFrame([
         {
-            "Setup": m["model"],
-            "Accuracy": pct(m["accuracy"]),
-            "Flagged for review": pct(m["review_rate"], 0),
-            "Error among confident": pct(m["error_rate_confident"]),
-            "True class in candidate set": pct(m["empirical_coverage"]),
-            "Mean candidate-set size": m["mean_set_size"],
+            "Setting": m["model"],
+            "Sent to a pathologist": pct(m["review_rate"], 0),
+            "Wrong among the rest": pct(m["error_rate_confident"]),
         }
         for m in models
     ])
+
+
+def by_patient_table(rows):
+    return pd.DataFrame([{"Patient": r["patient"], "Diagnosis": f'{r["truth"]}, {r["subtype"].lower()}',
+                          f"{UNITS.capitalize()}": r["n"], "Wrong": f'{r["wrong"]} ({r["wrong"] / r["n"]:.0%})',
+                          "Mean confidence": f'{r["mean_confidence"]:.0%}', "Sent for review": r["review"]}
+                         for r in rows])
 
 
 def robustness_table(rb):
@@ -613,6 +863,13 @@ def robustness_table(rb):
     return pd.DataFrame([{"Input": r["input"], "Suggestion changed": f"{r['changed']} of {n}",
                           "Flagged as unfamiliar": f"{r['unfamiliar']} of {n}",
                           "Sent for review": f"{r['review']} of {n}"} for r in rb["rows"]])
+
+
+def slide_validation_table(rows):
+    role = {"Chosen on": "Used to choose settings", "Unseen check": "Unseen"}
+    return pd.DataFrame([{"Slide": r["slide"], "Role": role.get(r["role"], r["role"]), "Cancer in its tissue": f"{r['cancer_share']:.0%}",
+                          "Cancer in its most suspicious 20%": f"{r['top20_cancer_share']:.0%}",
+                          "AUC": f"{r['auc']:.2f}"} for r in rows])
 
 
 def robustness_sentence(rb):
@@ -624,15 +881,114 @@ def robustness_sentence(rb):
             f"unfamiliar-{UNIT} check flagged {worst['unfamiliar']} of {rb['n']}.")
 
 
+LOW_AGREE = 3  # warn when at most this many of the 5 most similar confirmed images share the AI's answer
+
+
+def agreement(c):
+    """How many of the most similar confirmed images have the AI's suggested class."""
+    return sum(s["label"] == c["prediction"] for s in c["similar_cases"])
+
+
+LABELED = [c for c in CASES if c.get("true_label")]
+_low = [c for c in LABELED if len(c["similar_cases"]) == 5 and agreement(c) <= LOW_AGREE]
+# Share the AI got right in the test set when the similar images disagreed (quoted in the Lookup warning)
+LOW_AGREE_RIGHT = (sum(c["prediction"] == c["true_label"] for c in _low) / len(_low)) if len(_low) >= 5 else None
+
+
+def ev_bar(key, value, strong=True):
+    return (f'<div class="ev-line"><span class="ev-key">{key}</span><div class="prob-track"><div class="prob-fill '
+            f'{"bar-strong" if strong else "bar-soft"}" style="width:{100 * value:.1f}%"></div></div>'
+            f'<span class="ev-val">{value:.0%}</span></div>')
+
+
+def ev_row(label, n, bars):
+    small = " · small sample" if n < 20 else ""  # a handful of images: don't read much into the bar
+    return (f'<div class="ev-row"><div class="ev-label">{escape(label)}<span class="ev-n">{n:,} {UNITS}{small}</span></div>'
+            f'<div class="ev-bars-col">{bars}</div></div>')
+
+
+def per_hundred_html(cases):
+    """Who handles what, out of every 100 images: the AI alone vs the AI plus a pathologist for the unsure ones."""
+    n = len(cases)
+    wrong = [c["prediction"] != c["true_label"] for c in cases]
+    sure = [c["risk"] == "confident" for c in cases]
+    handled = round(100 * sum(sure) / n)
+    review = 100 - handled
+    all_wrong = round(100 * sum(wrong) / n)
+    alone_wrong = round(100 * sum(w and k for w, k in zip(wrong, sure)) / n)
+    caught = all_wrong - alone_wrong  # rounded once, so the parts add up
+
+    def bar(segments):
+        return '<div class="hund-bar">' + "".join(
+            f'<span class="seg {cls}" style="flex:{v} 0 0"></span>' for cls, v in segments if v > 0) + "</div>"
+
+    caught_txt = ("all of them" if alone_wrong == 0 and caught else f"{caught} of them" if caught else "none of them")
+    take = (f'<p class="ev-take">Out of every 100 {UNITS}, letting the AI handle all of them gives {all_wrong} mistakes. '
+            f"Letting it handle only the {handled} it is sure about, and sending {review} to a pathologist, puts "
+            f"{caught_txt} in front of a person; {alone_wrong or 'none'} stay in the {UNITS} the AI handled alone.</p>")
+    rows = (
+        f'<div class="hund-row"><div class="ev-label">AI handles everything</div>'
+        f'{bar([("seg-ok", 100 - all_wrong), ("seg-bad", all_wrong)])}'
+        f'<div class="hund-txt">100 by the AI, <b>{all_wrong} wrong</b></div></div>'
+        f'<div class="hund-row"><div class="ev-label">AI handles only what it is sure about</div>'
+        f'{bar([("seg-ok", handled - alone_wrong), ("seg-bad", alone_wrong), ("seg-rev-bad", caught), ("seg-rev", review - caught)])}'
+        f'<div class="hund-txt">{handled} by the AI, <b>{alone_wrong} wrong</b><br>{review} to a pathologist, '
+        f"{caught} of them AI mistakes</div></div>"
+    )
+    legend = ('<div class="hund-legend"><span><i class="seg-ok"></i>AI right</span><span><i class="seg-bad"></i>AI wrong'
+              '</span><span><i class="seg-rev-bad"></i>AI wrong, sent to a pathologist</span><span><i class="seg-rev"></i>'
+              "AI right, sent to a pathologist</span></div>")
+    note = (f'<p class="small muted hund-note">Each bar is 100 {UNITS}, scaled from the {n:,} test {UNITS}. Whether the '
+            "pathologist then gets them right is not measured here.</p>")
+    return take + '<div class="hund">' + rows + legend + "</div>" + note
+
+
+def calibration_html(cases):
+    """Does '90% sure' mean 90% right? Claimed vs actual, in three confidence bands."""
+    bands = [("AI was at least 90% sure", 0.9, 1.01), ("AI was 70 to 90% sure", 0.7, 0.9), ("AI was under 70% sure", 0, 0.7)]
+    rows, top = [], None
+    for label, lo, hi in bands:
+        cs = [c for c in cases if lo <= max(c["probabilities"].values()) < hi]
+        if not cs:
+            continue
+        claimed = sum(max(c["probabilities"].values()) for c in cs) / len(cs)
+        right = sum(c["prediction"] == c["true_label"] for c in cs) / len(cs)
+        top = top or (claimed, right, len(cs))
+        rows.append(ev_row(label, len(cs), ev_bar("Claimed", claimed, strong=False) + ev_bar("Right", right)))
+    claimed, right, n = top
+    gap = round(100 * (claimed - right))
+    verdict = ("so here its confidence can be taken at face value" if gap <= 3
+               else f"so it is about {gap} points more sure of itself than it should be")
+    return (f'<p class="ev-take">When the AI said it was at least 90% sure, it was right {right:.0%} of the time '
+            f"(it claimed {claimed:.0%} on average), {verdict}.</p>" + '<div class="ev-bars">' + "".join(rows) + "</div>")
+
+
+def agreement_html(cases):
+    """Is the AI more often wrong when the most similar confirmed images disagree with it?"""
+    bands = [("All 5 similar images agree", 5, 5), ("4 of 5 agree", 4, 4), (f"{LOW_AGREE} or fewer agree", 0, LOW_AGREE)]
+    rows, rate = [], {}
+    for label, lo, hi in bands:
+        cs = [c for c in cases if len(c["similar_cases"]) == 5 and lo <= agreement(c) <= hi]
+        if not cs:
+            continue
+        rate[lo] = sum(c["prediction"] == c["true_label"] for c in cs) / len(cs)
+        rows.append(ev_row(label, len(cs), ev_bar("Right", rate[lo])))
+    take = ""
+    if 5 in rate and 0 in rate:
+        take = (f'<p class="ev-take">When all 5 of the most similar confirmed {UNITS} had the AI\'s answer, it was right '
+                f"{rate[5]:.0%} of the time; when {LOW_AGREE} or fewer did, {rate[0]:.0%}. Lookup warns in that case.</p>")
+    return take + '<div class="ev-bars">' + "".join(rows) + "</div>"
+
+
 def evidence_head_html(e):
     verb = "was" if e["n_wrong_confident"] == 1 else "were"
     target = f" (target at least {pct(1 - e['alpha'], 0)})" if e.get("alpha") else ""
     return (
         '<h2 class="page-title">Can “confident” be trusted?</h2>'
-        f'<p class="headline">Of the {e["n_confident"]} {UNITS} the AI marked confident, '
-        f'{e["n_wrong_confident"]} {verb} wrong ({pct(e["error_rate_confident"])}).</p>'
-        f'<p class="lede">{pct(e["review_rate"], 0)} of {UNITS} were sent for review. The true class was in the '
-        f'candidate set for {pct(e["empirical_coverage"])} of {UNITS}{target}.</p>'
+        f'<p class="headline">Of the {e["n_confident"]:,} {UNITS} the AI marked confident, '
+        f'{e["n_wrong_confident"]:,} {verb} wrong ({pct(e["error_rate_confident"])}).</p>'
+        f'<p class="lede">{pct(e["review_rate"], 0)} of {UNITS} were sent to a pathologist; the AI handled the other '
+        f'{pct(1 - e["review_rate"], 0)} on its own{target}.</p>'
         f'<p class="source">{escape(e["source"])}</p>'
     )
 
@@ -674,8 +1030,11 @@ CSS = """
   --warn: oklch(0.47 0.10 65); --warn-dot: oklch(0.77 0.15 75); --warn-bg: oklch(0.965 0.04 85);
   --bad: oklch(0.48 0.16 27); --bad-dot: oklch(0.62 0.19 27); --bad-bg: oklch(0.96 0.03 27);
   --radius: 12px; --ease: cubic-bezier(0.25, 1, 0.5, 1);
+  /* Spacing scale (4 pt): tight inside a group, generous between sections */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 24px; --s-6: 32px; --s-7: 48px;
 }
-.gradio-container { width: 100% !important; max-width: 1180px !important; margin: 0 auto !important; }
+.gradio-container { width: 100% !important; max-width: 1180px !important; margin: 0 auto !important;
+                    overflow: visible !important; overflow-x: clip !important; }  /* clip, not hidden: keeps sticky working */
 
 /* Header */
 .app-header { display:flex; justify-content:space-between; align-items:flex-end; gap:16px;
@@ -694,7 +1053,7 @@ CSS = """
 .muted { color:var(--muted); }
 .meta { font-size:13px; color:var(--muted); }
 .placeholder { font-size:15px; color:var(--muted); padding:24px 4px; }
-.section-title h3 { font-size:15px !important; font-weight:600 !important; color:var(--ink) !important; margin:8px 0 0 !important; }
+.section-title h3 { font-size:15px !important; font-weight:600 !important; color:var(--ink) !important; margin:var(--s-6) 0 0 !important; }
 
 /* Status */
 .dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex:none; }
@@ -720,22 +1079,34 @@ CSS = """
 /* Review */
 .case-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .verdict-main { font-size:28px; font-weight:650; color:var(--ink); line-height:1.2; letter-spacing:-0.01em; margin-top:2px; text-wrap:balance; }
-.verdict-conf { font-size:16px; color:var(--ink-2); margin-top:2px; }
-.verdict-alt { font-size:15px; color:var(--ink-2); margin-top:14px; }
-.note { font-size:14px; color:var(--ink-2); background:oklch(0.955 0.006 255); border-radius:8px; padding:8px 12px; margin-top:12px; }
+.verdict-conf { font-size:15px; color:var(--ink-2); margin-top:2px; }
+.verdict-alt { font-size:15px; color:var(--ink-2); margin-top:var(--s-3); }
+.note { font-size:14px; color:var(--ink-2); background:oklch(0.955 0.006 255); border-radius:8px; padding:var(--s-2) var(--s-3); margin-top:var(--s-4); }
 .note ul { margin:6px 0 0 18px; }
 .note-warn { color:var(--warn); background:var(--warn-bg); }
-.next { font-size:14px; font-weight:600; color:var(--accent); margin-top:12px; }
+.next { font-size:14px; font-weight:600; color:var(--accent); margin-top:var(--s-4); }
 /* Suggested next step: tests for the differential first, then general steps */
-.next-steps { margin-top:14px; border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:var(--surface, #fff); }
-.next-title { font-size:14px; font-weight:600; color:var(--accent); }
-.next-steps ol { margin:8px 0 0 18px; padding:0; }
-.next-steps li { font-size:14px; color:var(--ink); margin-top:6px; line-height:1.4; }
-.step-read { font-size:13.5px; color:var(--ink-2); margin-top:2px; }
-.step-src summary { cursor:pointer; font-size:12.5px; color:var(--muted); margin-top:3px; }
-.step-src .quote { font-size:12.5px; margin:6px 0 0; padding:6px 10px; border-radius:6px; background:var(--hover); color:var(--ink-2); }
-.step-status { margin:8px 0 0; }
-.refs-fold > summary { cursor:pointer; margin-top:8px; }
+.next-steps { margin-top:var(--s-5); border:1px solid var(--line); border-radius:var(--radius); padding:var(--s-4); background:var(--surface); }
+.next-title { font-size:15px; font-weight:600; color:var(--ink); }
+.next-steps ol { margin:var(--s-3) 0 0 var(--s-5); padding:0; display:flex; flex-direction:column; gap:var(--s-3); }
+.next-steps li { font-size:14px; color:var(--ink); line-height:1.4; padding-left:var(--s-1); }
+.step-read { font-size:13px; line-height:1.45; color:var(--ink-2); margin-top:var(--s-1); max-width:62ch; }
+.step-src summary { cursor:pointer; font-size:12px; color:var(--muted); margin-top:var(--s-1); }
+.step-src summary a { color:var(--ink-2); }
+.step-src .quote { font-size:13px; line-height:1.45; margin:var(--s-2) 0 0; padding:var(--s-2) var(--s-3); border-radius:8px; background:var(--hover); color:var(--ink-2); }
+.step-status { margin:var(--s-4) 0 0; padding-top:var(--s-3); border-top:1px solid var(--line); }
+/* Folded sections share one look: the papers fold matches the gallery accordion below it */
+.refs-fold { margin-top:var(--s-6); border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); padding:0 var(--s-3); }
+.refs-fold > summary { list-style:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center;
+    gap:var(--s-3); margin:0 !important; padding:10px 0; font-size:14px; font-weight:500; color:var(--ink); }
+.refs-fold > summary::-webkit-details-marker { display:none; }
+.refs-fold > summary::after { content:"▼"; font-size:14px; line-height:1; color:var(--ink-2); transform:rotate(90deg);
+    transition:transform 150ms var(--ease); }  /* same glyph, size and turn as Gradio's accordion icon */
+.refs-fold[open] > summary::after { transform:none; }
+.gradio-container .block:has(> .label-wrap) { border-color:var(--line) !important; }  /* same edge as the papers fold */
+.gradio-container .label-wrap { font-size:14px !important; font-weight:500 !important; color:var(--ink) !important; }
+.gradio-container .label-wrap .icon { font-size:14px !important; color:var(--ink-2) !important; }
+.refs-fold[open] { padding-bottom:var(--s-3); }
 .truth { font-size:13px; color:var(--ink-2); border:1px dashed oklch(0.75 0.01 260); border-radius:8px; padding:8px 12px; margin-top:12px; }
 
 /* Images: the tissue is the hero; no box, rounded corners, scaled up from 224 px */
@@ -763,13 +1134,13 @@ CSS = """
 .compare [data-testid="block-label"] { position:static !important; border:none !important; background:transparent !important;
     box-shadow:none !important; padding:0 0 6px !important; font-size:13px !important; font-weight:600 !important;
     color:var(--ink-2) !important; }
-.compare [data-testid="block-label"] svg { display:none !important; }
+.compare [data-testid="block-label"] svg, .compare [data-testid="block-label"] span:has(svg) { display:none !important; }
 .compare .grid-container { padding-top:0 !important; }
 
 /* Why: the reason and probabilities, right under the decision */
-.why { margin-top:18px; padding-top:14px; border-top:1px solid var(--line); }
+.why { margin-top:var(--s-5); padding-top:var(--s-4); border-top:1px solid var(--line); }
 .why-title { font-size:13px; font-weight:600; color:var(--ink-2); }
-.why-reason { font-size:13.5px; line-height:1.45; color:var(--ink-2); margin:4px 0 8px; }
+.why-reason { font-size:14px; line-height:1.45; color:var(--ink-2); margin:var(--s-1) 0 var(--s-3); max-width:68ch; }
 .ref-source { margin:2px 0 0; }
 .app-footer { margin-top:24px; padding-top:12px; border-top:1px solid var(--line); font-size:12px; color:var(--muted); }
 .app-footer a { color:var(--ink-2); padding:0 !important; }
@@ -790,9 +1161,38 @@ CSS = """
 .prob-fill { height:100%; border-radius:999px; }
 .bar-strong { background:var(--accent); }
 .bar-soft { background:oklch(0.74 0.025 255); }
-.subhead { font-size:15px; font-weight:600; color:var(--ink); margin:12px 0 0; }
+.subhead { font-size:15px; font-weight:600; color:var(--ink); margin:var(--s-6) 0 0; }
 .small { font-size:13px; }
 .sim-note { margin:2px 0 0; }
+.privacy { margin:var(--s-1) 0 0; }
+.lk-probs { margin-top:var(--s-5); }
+/* Evidence: plain-language bars (claimed vs right, agreement) */
+.ev-take, .ev-md p { font-size:14px; line-height:1.5; color:var(--ink-2); margin:var(--s-2) 0 0; max-width:75ch; }
+.ev-bars { margin-top:var(--s-3); max-width:760px; }
+.ev-row { display:grid; grid-template-columns:240px minmax(0, 1fr); gap:var(--s-2) var(--s-5); align-items:center;
+          padding:var(--s-3) 0; border-top:1px solid var(--line); }
+.ev-row:last-child { border-bottom:1px solid var(--line); }
+.ev-label { font-size:14px; color:var(--ink); font-weight:500; display:flex; flex-direction:column; gap:2px; }
+.ev-n { font-size:12px; color:var(--muted); font-weight:400; font-variant-numeric:tabular-nums; }
+.ev-bars-col { display:flex; flex-direction:column; gap:var(--s-2); }
+.ev-line { display:grid; grid-template-columns:64px minmax(0, 1fr) 44px; align-items:center; gap:var(--s-3); }
+.ev-key { font-size:13px; color:var(--ink-2); }
+.ev-val { font-size:13px; color:var(--ink); font-weight:500; text-align:right; font-variant-numeric:tabular-nums; }
+/* Per 100 images: one stacked bar per way of working; text carries the numbers */
+.hund { margin-top:var(--s-3); max-width:900px; }
+.hund-row { display:grid; grid-template-columns:240px minmax(0, 1fr) 290px; gap:var(--s-2) var(--s-5); align-items:center;
+            padding:var(--s-3) 0; border-top:1px solid var(--line); }
+.hund-bar { display:flex; gap:2px; height:16px; }
+.hund-bar .seg:first-child { border-radius:4px 0 0 4px; } .hund-bar .seg:last-child { border-radius:0 4px 4px 0; }
+.seg-ok { background:oklch(0.62 0.09 255); } .seg-bad { background:var(--bad-dot); } .seg-rev { background:oklch(0.86 0.012 255); }
+.seg-rev-bad { background:oklch(0.62 0.19 27 / 0.38); }
+.hund-txt { font-size:13px; line-height:1.45; color:var(--ink-2); font-variant-numeric:tabular-nums; }
+.hund-txt b { color:var(--ink); font-weight:600; }
+.hund-legend { display:flex; flex-wrap:wrap; gap:var(--s-2) var(--s-5); padding-top:var(--s-3); border-top:1px solid var(--line);
+               font-size:12px; color:var(--ink-2); }
+.hund-legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px; vertical-align:-1px; }
+.hund-note { margin:var(--s-2) 0 0; }
+@media (max-width: 640px) { .ev-row, .hund-row { grid-template-columns:1fr; } }
 
 /* References: literature and stains for the differential */
 .references { margin-top:4px; }
@@ -804,19 +1204,116 @@ CSS = """
 .papers li::before, .rules li::before { content:none !important; }
 .papers a { color:var(--accent); font-weight:500; text-decoration:none; padding:0 !important; }
 .papers a:hover { text-decoration:underline; text-underline-offset:2px; }
-.paper-meta { font-size:12.5px; color:var(--muted); margin-top:2px; }
+.paper-meta { font-size:12px; color:var(--muted); margin-top:2px; }
 .references details summary { cursor:pointer; font-size:13px; color:var(--ink-2); margin:2px 0 6px; }
-.references .quote { display:block; margin:6px 0 0; padding:6px 10px; border-radius:6px; background:var(--hover);
+.references .quote { display:block; margin:6px 0 0; padding:6px 10px; border-radius:8px; background:var(--hover);
                      font-size:13px; line-height:1.45; color:var(--ink-2); }
 .search-link { display:inline-block; margin-top:4px; padding:0 !important; font-size:13px; color:var(--accent); font-weight:500; text-decoration:none; }
 .search-link:hover { text-decoration:underline; text-underline-offset:2px; }
 .empty { border:1px dashed oklch(0.82 0.01 255); border-radius:var(--radius); padding:28px 24px; background:var(--surface);
           min-height:340px; display:flex; flex-direction:column; justify-content:center; }
 .empty-title { font-size:16px; font-weight:600; color:var(--ink); }
-.thumbnail-item { border-radius:10px !important; overflow:hidden; }
+.thumbnail-item { border-radius:8px !important; overflow:hidden; }
 /* Compare galleries: fixed thumbnail size, so a lone candidate doesn't stretch and crop its tiles */
 .compare .grid-container { grid-template-columns:repeat(auto-fill, minmax(150px, 172px)) !important; }
-.thumbnail-item img { border-radius:10px; }
+.thumbnail-item img { border-radius:8px; }
+
+/* Lookup: input column (examples, image, button) beside the result column, both starting at the top */
+#lookup-image .image-frame, #lookup-image .image-container { height:auto !important; }
+#lk-left { gap:var(--s-3) !important; }
+.row:has(> #lk-left) { column-gap:var(--s-6) !important; }  /* clear gutter between input and result */
+/* Six examples in one row, filling the input column */
+#lk-left .gallery { display:grid !important; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:var(--s-2) !important; }
+#lk-left .gallery-item { padding:0 !important; min-width:0; overflow:hidden; border-radius:8px !important; }
+#lk-left .gallery-item .container { display:block !important; width:100% !important; max-width:none !important;
+    height:auto !important; aspect-ratio:4 / 3; border:0 !important; padding:0 !important; }
+#lk-left .gallery-item > span { display:block; }
+#lk-left .gallery-item img { width:100% !important; height:100% !important; object-fit:cover; display:block; }
+/* Gallery accordion spacing matches the papers fold above it */
+.gradio-container .block.accordion { margin-top:var(--s-3); }
+/* Tables read like the rest of the page: same font, no extra chrome */
+.gradio-container table, .gradio-container table *,
+.gradio-container .virtual-row, .gradio-container .virtual-row * { font-family:inherit !important; font-variant-numeric:tabular-nums; }
+.gradio-container .virtual-row, .gradio-container .virtual-row * , .gradio-container table { color:var(--ink) !important; }
+.gradio-container table th { white-space:normal !important; }
+/* Narrow screens: header stacks instead of squeezing the source pill */
+@media (max-width: 640px) {
+  .app-header { flex-direction:column; align-items:flex-start; gap:var(--s-2); }
+  .verdict-main { font-size:24px; }
+}
+
+/* Slide view */
+.sv-controls { gap:var(--s-3) !important; align-items:center !important; margin-bottom:var(--s-3); flex-wrap:nowrap !important; }
+.sv-controls > * { min-width:0 !important; }
+/* Layer switch: same segmented control as the dataset switch */
+#sv-layer { flex:0 0 auto !important; width:max-content !important; overflow:visible !important; }
+#sv-layer .wrap:has(> label) { position:relative; display:grid; grid-auto-flow:column; grid-auto-columns:1fr; gap:0;
+    padding:3px; border:1px solid var(--line); border-radius:999px; background:var(--surface); }
+#sv-layer .wrap:has(> label)::before { content:""; position:absolute; top:3px; bottom:3px; left:3px;
+    width:calc((100% - 6px) / 2); border-radius:999px; background:var(--accent); transition:transform 280ms var(--ease); }
+#sv-layer .wrap:has(> label:nth-child(2).selected)::before { transform:translateX(100%); }
+#sv-layer .wrap:has(> label:nth-child(3))::before { width:calc((100% - 6px) / 3); }
+#sv-layer .wrap:has(> label:nth-child(3).selected)::before { transform:translateX(200%); }
+.sv-fact { font-size:14px; color:var(--ink); margin:var(--s-2) 0 0; }
+.sv-fact .muted { margin-right:6px; }
+.verdict .verdict-conf + .sv-fact { margin-top:var(--s-4); }
+#sv-src { flex:1 1 180px !important; min-width:180px !important; }
+.sv-trust { margin:var(--s-2) 0 0; max-width:75ch; }
+.sv-details { margin-top:var(--s-4) !important; }
+.sv-details .why { border-top:0; margin-top:0; padding-top:0; }
+#sv-layer label { position:relative; z-index:1; justify-content:center; border:0 !important; border-radius:999px !important;
+    padding:5px 16px !important; background:transparent !important; box-shadow:none !important; font-size:13px;
+    font-weight:500; color:var(--ink-2); cursor:pointer; transition:color 200ms var(--ease); white-space:nowrap; }
+#sv-layer label.selected { color:#fff !important; }
+#sv-layer label span { margin:0 !important; }
+#sv-layer input { position:absolute; opacity:0; pointer-events:none; }
+#sv-layer label, #sv-layer label:focus-within { outline:none !important; }
+#sv-layer .wrap:has(input:focus-visible) { box-shadow:0 0 0 3px oklch(0.42 0.12 255 / 0.25); }
+#sv-sim .grid-container { grid-template-columns:repeat(5, minmax(0, 1fr)) !important; }
+#sv-upload { white-space:nowrap; min-width:max-content !important; flex:0 0 auto !important; color:var(--ink) !important;
+             border:1px solid var(--line) !important; background:var(--surface) !important; border-radius:8px !important; }
+#sv-upload:hover { background:var(--hover) !important; }
+#sv-image img { width:100% !important; height:auto !important; border-radius:var(--radius); cursor:crosshair; }
+#sv-image, #sv-patch { background:transparent !important; border:none !important; box-shadow:none !important; }
+#sv-patch img { width:min(100%, 280px) !important; height:auto !important; border-radius:var(--radius); }
+.sv-summary { margin-top:var(--s-3); }
+.sv-count { font-size:14px; font-weight:500; color:var(--ink); }
+.sv-legend { border-top:0 !important; padding-top:var(--s-2) !important; }
+.sv-empty { min-height:260px; }
+
+/* Lightbox for reference images */
+.lightbox { border:0; padding:0; background:transparent; max-width:none; max-height:none; overflow:visible; }
+.lightbox::backdrop { background:oklch(0.22 0.02 260 / 0.55); }
+.lightbox[open] { animation:fade-up 220ms var(--ease); }
+.lightbox figure { position:relative; margin:0; padding:var(--s-3); background:var(--surface); border-radius:var(--radius); }
+.lightbox img { display:block; max-width:min(88vw, 1024px); max-height:76vh; width:auto; height:auto; border-radius:8px; }
+.lightbox figcaption { font-size:14px; color:var(--ink-2); margin:var(--s-3) var(--s-1) var(--s-1); }
+.lightbox-close { position:absolute; top:var(--s-5); right:var(--s-5); padding:6px 12px; border:0; border-radius:999px;
+                  background:var(--surface); color:var(--ink); font:500 13px/1 inherit; cursor:pointer;
+                  box-shadow:0 1px 4px oklch(0 0 0 / 0.18); }
+.lightbox-close:hover { background:var(--hover); }
+.compare .thumbnail-item { cursor:zoom-in; }
+
+/* Motion: tab underline slides, new content fades in, data bars draw from the left */
+[role=tablist] { position:relative; }
+.tab-indicator { position:absolute; left:0; bottom:0; height:2px; border-radius:2px; background:var(--accent);
+                 pointer-events:none; transition:transform 260ms var(--ease), width 260ms var(--ease), opacity 150ms; }
+.has-indicator button[role=tab].selected::after { opacity:0 !important; }
+button[role=tab] { color:var(--ink-2) !important; transition:color 200ms var(--ease) !important; }
+button[role=tab]:hover { color:var(--ink) !important; }
+button[role=tab].selected { color:var(--accent) !important; }
+.gradio-container b, .gradio-container strong { color:inherit !important; }  /* Gradio's prose sets its own gray */
+.gradio-container .caption-label { color:var(--ink) !important; }
+.prob-head span:not(.prob-val), .hund-legend span { color:inherit !important; }
+.gradio-container button.primary { border-radius:8px !important; }
+@keyframes fade-up { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+@keyframes fade-in { from { opacity:0; } to { opacity:1; } }
+@keyframes draw { from { clip-path:inset(0 100% 0 0); } to { clip-path:inset(0 0 0 0); } }
+.tabitem { animation:fade-in 220ms var(--ease); }
+#lk-verdict .verdict, #lk-verdict .empty, .why, .next-steps, .lk-probs { animation:fade-up 260ms var(--ease); }
+.prob-fill, .hund-bar { animation:draw 600ms var(--ease); }
+details[open] > :not(summary) { animation:fade-up 220ms var(--ease); }
+button.primary:active, button.secondary:active { transform:scale(0.98); }
 
 /* Motion: state changes only, short, and off for reduced motion */
 button, .thumbnail-item, #queue-table .body-cell { transition: background-color 150ms var(--ease), box-shadow 150ms var(--ease), transform 150ms var(--ease); }
@@ -833,14 +1330,69 @@ FORCE_LIGHT = """() => {
   }
 }"""
 
+# One underline per tab bar that slides to the selected tab (Gradio draws a static one per button).
+TAB_INDICATOR = """() => {
+  const place = (list) => {
+    let bar = list.querySelector(':scope > .tab-indicator');
+    const fresh = !bar;
+    if (fresh) {
+      bar = document.createElement('span');
+      bar.className = 'tab-indicator';
+      bar.style.transition = 'none';  // first placement: no slide in from the left edge
+      list.appendChild(bar);
+      list.classList.add('has-indicator');
+    }
+    const tab = list.querySelector('button[role=tab].selected');
+    if (!tab) { bar.style.opacity = '0'; return; }
+    bar.style.opacity = '1';
+    bar.style.width = tab.offsetWidth + 'px';
+    bar.style.transform = 'translateX(' + tab.offsetLeft + 'px)';
+    if (fresh) requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.transition = ''; }));
+  };
+  let queued = false;
+  const scan = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; document.querySelectorAll('[role=tablist]').forEach(place); });
+  };
+  new MutationObserver(scan).observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ['class']});
+  window.addEventListener('resize', scan);
+  scan();
+}"""
+# Click a reference image -> a large view in a native <dialog> (Esc, the backdrop or Close dismiss it).
+LIGHTBOX = """() => {
+  const box = document.createElement('dialog');
+  box.className = 'lightbox';
+  box.innerHTML = '<figure><button type="button" class="lightbox-close">Close</button><img alt="">'
+                + '<figcaption></figcaption></figure>';
+  document.body.appendChild(box);
+  const img = box.querySelector('img'), cap = box.querySelector('figcaption');
+  box.addEventListener('click', (e) => { if (e.target === box || e.target.closest('.lightbox-close')) box.close(); });
+  document.addEventListener('click', (e) => {
+    const item = e.target.closest('.compare .thumbnail-item');
+    const pic = item && item.querySelector('img');
+    if (!pic) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const group = item.closest('.compare').querySelector('[data-testid=block-label]');
+    const label = item.querySelector('.caption-label');
+    cap.textContent = [group && group.innerText, label && label.innerText].filter(Boolean).join(' \u00b7 ');
+    img.alt = cap.textContent;
+    img.src = pic.currentSrc || pic.src;
+    box.showModal();
+  }, true);
+}"""
+JS = f"() => {{ ({FORCE_LIGHT})(); ({TAB_INDICATOR})(); ({LIGHTBOX})(); }}"
+
 
 with gr.Blocks(title="Pathology Assistant") as demo:
-    gr.HTML(app_header_html())
+    if not args.embedded:
+        gr.HTML(app_header_html())
     decisions = gr.State({})  # this browser session's sign-offs
 
     # Queue and Review are hidden for now (Bowen, 10/17); --show-review brings them back.
     SHOW_REVIEW = args.show_review or not LIVE
-    with gr.Tabs(selected="queue" if SHOW_REVIEW else "lookup") as tabs:
+    with gr.Tabs(selected="queue" if SHOW_REVIEW else ("slides" if SLIDE_VIEW else "lookup")) as tabs:
         # A. Pre-read / triage: the doctor only sees what needs a doctor.
         with gr.Tab("Queue", id="queue", visible=SHOW_REVIEW):
             with gr.Row(equal_height=True):
@@ -887,43 +1439,82 @@ with gr.Blocks(title="Pathology Assistant") as demo:
             gr.HTML(f'<h3 class="subhead">Compare with confirmed reference {REF_NOUN}</h3>{SIMILARITY_NOTE}',
                     elem_classes="flush")
             with gr.Row():
-                case_compare = [gr.Gallery(columns=3, height=200, visible=False, buttons=[], elem_classes="compare")
+                case_compare = [gr.Gallery(columns=3, height=200, visible=False, buttons=[], allow_preview=False, elem_classes="compare")
                                 for _ in range(N_COMPARE)]
             case_refs = gr.HTML(visible=False, elem_classes="flush")
             with gr.Accordion(f"More similar confirmed {REF_NOUN}, any class", open=False):
-                case_neighbors = gr.Gallery(show_label=False, columns=5, height=255, buttons=[], elem_classes="compare")
+                case_neighbors = gr.Gallery(show_label=False, columns=5, height=255, buttons=[], allow_preview=False, elem_classes="compare")
+
+        # A2. Slide view: look over a whole slide (or a large photo) first, then click into a patch
+        if SLIDE_VIEW:
+            with gr.Tab("Slide view", id="slides"):
+                gr.HTML('<h2 class="page-title">Look over a slide</h2><p class="lede">Colors mark where to look first. '
+                        "Click a spot to inspect that patch.</p>", elem_classes="flush")
+                first = sv_choices()[0]
+                e0 = sv_source(first)
+                with gr.Row(equal_height=False, elem_id="sv-row"):
+                    with gr.Column(scale=7, elem_id="sv-left"):
+                        with gr.Row(equal_height=True, elem_classes="sv-controls"):
+                            sv_src = gr.Dropdown(sv_choices(), value=first, show_label=False, container=False, scale=3,
+                                                 elem_id="sv-src")
+                            sv_lay = gr.Radio(sv_layers(e0), value="Suspicious", show_label=False,
+                                              container=False, elem_id="sv-layer", scale=3)
+                            sv_up = gr.UploadButton("Upload photo", file_types=["image"], variant="secondary",
+                                                    size="sm", scale=0, elem_id="sv-upload")
+                        sv_img = gr.Image(value=sv_render(e0, "Suspicious"), interactive=False,
+                                          show_label=False, buttons=[], elem_id="sv-image")
+                        sv_sum = gr.HTML(sv_summary_html(e0, "Suspicious"), elem_classes="flush")
+                    with gr.Column(scale=5, elem_id="sv-right"):
+                        sv_patch = gr.Image(visible=False, interactive=False, show_label=False, buttons=[],
+                                            elem_id="sv-patch")
+                        sv_verdict = gr.HTML(SV_EMPTY, elem_classes="flush")
+                        sv_why = gr.HTML(visible=False, elem_classes="flush")
+                        sv_sim = gr.Gallery(visible=False, columns=5, height=120, buttons=[], allow_preview=False,
+                                            label="Most similar confirmed patches", elem_classes="compare",
+                                            elem_id="sv-sim")
+                sv_state = gr.State({"choice": first, "sel": None})
+            sv_outputs = [sv_img, sv_sum, sv_state, sv_patch, sv_verdict, sv_why, sv_sim, sv_lay]
+            sv_src.change(fn=sv_show, inputs=[sv_src, sv_lay], outputs=sv_outputs, api_visibility="private")
+            sv_up.upload(fn=sv_upload, inputs=[sv_up, sv_lay, sv_state], outputs=sv_outputs, api_visibility="private")
+            sv_lay.input(fn=sv_relayer, inputs=[sv_lay, sv_state], outputs=[sv_img, sv_sum], api_visibility="private")
+            sv_img.select(fn=sv_click, inputs=[sv_lay, sv_state],
+                          outputs=[sv_img, sv_state, sv_patch, sv_verdict, sv_why, sv_sim], api_visibility="private")
 
         # B. Pathology dictionary
         if LIVE:
             with gr.Tab("Lookup", id="lookup"):
                 hint = escape(META.get("input_hint", "Upload one H&E tile (about 224×224 px at 0.5 µm/px)"))
                 gr.HTML(f'<h2 class="page-title">Look up {"an image" if REF_NOUN == "images" else "a tile"}</h2>'
-                        f'<p class="lede">{hint} to compare it with confirmed reference {REF_NOUN}.</p>',
+                        f'<p class="lede">{hint} to compare it with confirmed reference {REF_NOUN}.</p>'
+                        '<p class="small muted privacy">Public research demo: please do not upload images that could '
+                        "identify a patient.</p>",
                         elem_classes="flush")
                 # Created first so the examples strip can sit above it; placed in the row below.
-                lk_image = gr.Image(type="pil", show_label=False, height=390, elem_id="lookup-image",
+                lk_image = gr.Image(type="pil", show_label=False, elem_id="lookup-image",
                                     sources=["upload", "clipboard"], render=False)
                 example_tiles = sorted(p for p in (DATA_DIR / "examples").glob("*") if p.suffix in (".png", ".jpg", ".webp"))[:6]
-                if example_tiles:
-                    gr.Examples(examples=[[str(p)] for p in example_tiles], inputs=lk_image,
-                                label=META.get("examples_label", "Try an example (not in the queue)"),
-                                examples_per_page=6)
                 with gr.Row(equal_height=False):
-                    with gr.Column(scale=5):
+                    # Input column: examples sit above the upload, so the result column starts at the top
+                    with gr.Column(scale=5, elem_id="lk-left"):
+                        if example_tiles:
+                            gr.Examples(examples=[[str(p)] for p in example_tiles], inputs=lk_image,
+                                        label=META.get("examples_label", "Try an example (not in the queue)"),
+                                        examples_per_page=6)
                         lk_image.render()
                         lk_btn = gr.Button("Look up", variant="primary")
+                        # Why sits under the input so the two columns end at about the same height
+                        lk_why = gr.HTML(visible=False, elem_classes="flush")
                     with gr.Column(scale=6):
                         lk_verdict = gr.HTML(LOOKUP_EMPTY, elem_id="lk-verdict", elem_classes="flush")
-                        lk_why = gr.HTML(visible=False, elem_classes="flush")
                 lk_compare_title = gr.HTML(f'<h3 class="subhead">Compare with confirmed reference {REF_NOUN}</h3>'
                                            f'{SIMILARITY_NOTE}',
                                            visible=False, elem_classes="flush")
                 with gr.Row():
-                    lk_compare = [gr.Gallery(columns=3, height=200, visible=False, buttons=[], elem_classes="compare")
+                    lk_compare = [gr.Gallery(columns=3, height=200, visible=False, buttons=[], allow_preview=False, elem_classes="compare")
                                   for _ in range(N_COMPARE)]
                 lk_refs = gr.HTML(visible=False, elem_classes="flush")
                 with gr.Accordion(f"More similar confirmed {REF_NOUN}, any class", open=False, visible=False) as lk_more:
-                    lk_neighbors = gr.Gallery(show_label=False, columns=5, height=255, buttons=[], elem_classes="compare")
+                    lk_neighbors = gr.Gallery(show_label=False, columns=5, height=255, buttons=[], allow_preview=False, elem_classes="compare")
             lk_btn.click(fn=lookup, inputs=lk_image,
                          outputs=[lk_verdict, lk_why, lk_compare_title, *lk_compare, lk_refs, lk_more, lk_neighbors])
 
@@ -933,26 +1524,36 @@ with gr.Blocks(title="Pathology Assistant") as demo:
                 gr.HTML('<div class="placeholder">No evidence data yet. Add <code>evidence.json</code> '
                         "to the data folder (format: docs/INTERFACE.md).</div>")
             else:
-                gr.HTML(evidence_head_html(EVIDENCE))
-                gr.Markdown("### Automate only what the model is sure about", elem_classes="section-title")
-                gr.LinePlot(
-                    value=pd.DataFrame(EVIDENCE["risk_coverage"]),
-                    x="coverage", y="error",
-                    title=f"Error rate when only the most confident {UNITS} are handled automatically (most confident first)",
-                    x_title=f"{UNITS.capitalize()} handled automatically (%)",
-                    y_title=f"Error rate among those {UNITS} (%)",
-                    x_lim=[0, 100], tooltip=["coverage", "error"], height=320,
-                )
-                gr.Markdown(risk_coverage_sentence(EVIDENCE["risk_coverage"]))
+                gr.HTML(evidence_head_html(EVIDENCE), elem_classes="flush")
+                if LABELED:
+                    gr.Markdown("### Does “90% sure” mean 90% right?", elem_classes="section-title")
+                    gr.HTML(calibration_html(LABELED), elem_classes="flush")
+                if LABELED:
+                    gr.Markdown("### How much can the AI handle on its own?", elem_classes="section-title")
+                    gr.HTML(per_hundred_html(LABELED), elem_classes="flush")
+                if LABELED and all(len(c["similar_cases"]) == 5 for c in LABELED):
+                    gr.Markdown("### When the most similar images disagree", elem_classes="section-title")
+                    gr.HTML(agreement_html(LABELED), elem_classes="flush")
                 gr.Markdown(f"### {EVIDENCE.get('models_title', 'Model comparison')}", elem_classes="section-title")
-                gr.Dataframe(value=model_table(EVIDENCE["models"]), interactive=False)
+                gr.Markdown("Each row is one way of deciding which images go to a pathologist.", elem_classes="ev-md")
+                gr.Dataframe(value=model_table(EVIDENCE["models"]), interactive=False, buttons=[], wrap=True)
+                if EVIDENCE.get("by_patient"):
+                    gr.Markdown("### Errors by patient", elem_classes="section-title")
+                    gr.Markdown(EVIDENCE.get("by_patient_note", ""), elem_classes="ev-md")
+                    gr.Dataframe(value=by_patient_table(EVIDENCE["by_patient"]), interactive=False, buttons=[],
+                                 wrap=True, max_height=420)
                 if EVIDENCE.get("robustness"):
                     rb = EVIDENCE["robustness"]
                     gr.Markdown("### When the input changes", elem_classes="section-title")
-                    gr.Dataframe(value=robustness_table(rb), interactive=False)
-                    gr.Markdown(f"{robustness_sentence(rb)} {rb['source']}")
-                gr.Markdown("### Data split", elem_classes="section-title")
-                gr.Markdown(EVIDENCE["split_note"])
+                    gr.Markdown(f"{robustness_sentence(rb)} {rb['source']}", elem_classes="ev-md")
+                    gr.Dataframe(value=robustness_table(rb), interactive=False, buttons=[], wrap=True)
+                if SLIDE_VALIDATION:
+                    gr.Markdown("### Slide maps against expert annotations", elem_classes="section-title")
+                    gr.Markdown(f"{SLIDE_VALIDATION_NOTE} {slide_validation_sentence(SLIDE_VALIDATION)}",
+                                elem_classes="ev-md")
+                    gr.Dataframe(value=slide_validation_table(SLIDE_VALIDATION), interactive=False, buttons=[], wrap=True)
+                gr.Markdown("### About this data", elem_classes="section-title")
+                gr.Markdown(EVIDENCE["split_note"], elem_classes="ev-md")
 
     gr.HTML(f'<footer class="app-footer">{META["attribution"]}</footer>' if META.get("attribution") else APP_FOOTER,
             elem_classes="flush")
@@ -988,6 +1589,6 @@ with gr.Blocks(title="Pathology Assistant") as demo:
 
 if __name__ == "__main__":
     demo.launch(
-        theme=THEME, css=CSS, js=FORCE_LIGHT, footer_links=[], share=args.share,
+        theme=THEME, css=CSS, js=JS, footer_links=[], share=args.share,
         allowed_paths=[str(DATA_DIR), str(LIVE_CACHE)],
     )
