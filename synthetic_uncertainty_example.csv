@@ -1,0 +1,12 @@
+# 假数据，只用于检查代码，不代表真实模型效果。
+image_id,true_label,predicted_label,confidence
+fake_01,tumor,normal,0.45
+fake_02,tumor,normal,0.55
+fake_03,normal,normal,0.52
+fake_04,tumor,tumor,0.62
+fake_05,tumor,normal,0.65
+fake_06,normal,normal,0.72
+fake_07,tumor,tumor,0.85
+fake_08,normal,normal,0.82
+fake_09,tumor,normal,0.85
+fake_10,normal,normal,1.00
