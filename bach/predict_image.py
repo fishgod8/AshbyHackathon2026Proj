@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from model_identity import load_checkpoint
+from Ashley_uncertainty.model_identity import load_checkpoint
 
 # Load the model adapter from this project.
 try:

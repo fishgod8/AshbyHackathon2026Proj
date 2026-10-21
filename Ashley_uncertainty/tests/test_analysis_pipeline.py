@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from analysis_pipeline import analyze_image, analyze_prediction, rank_for_review
+from Ashley_uncertainty.analysis_pipeline import analyze_image, analyze_prediction, rank_for_review
 from bach.predict_image import load_classifier
-from model_identity import inspect_checkpoint
+from Ashley_uncertainty.model_identity import inspect_checkpoint
 
 
 class UnifiedAnalysisTests(unittest.TestCase):
@@ -31,19 +31,6 @@ class UnifiedAnalysisTests(unittest.TestCase):
         self.assertTrue(result["needs_review"])
         self.assertEqual(result["embedding"], [1.0, 2.0])
 
-    def test_conformal_multi_label_reason(self):
-        artifact = {"method": "lac_split_conformal", "alpha": .1, "quantile": .8,
-                    "class_names": ["Normal", "Benign", "InSitu", "Invasive"],
-                    "calibration_sample_count": 40,
-                    "calibration_status": "independent_labeled_calibration",
-                    "classifier_identity": inspect_checkpoint("bach/classifier.pkl")}
-        # Class order is part of the binding and must match the checkpoint.
-        artifact["class_names"] = artifact["classifier_identity"]["class_order"]
-        result = analyze_prediction(self.prediction(), calibration_artifact=artifact,
-                                    classifier_path="bach/classifier.pkl")
-        self.assertGreater(result["prediction_set"].__len__(), 1)
-        self.assertIn("Multiple labels in conformal prediction set", result["review_reasons"])
-
     def test_rejects_mismatched_label(self):
         prediction = self.prediction()
         prediction["predicted_class"] = "Normal"
@@ -62,17 +49,6 @@ class UnifiedAnalysisTests(unittest.TestCase):
         prediction["predicted_class"] = "Benign"
         with self.assertRaisesRegex(ValueError, "expected classes"):
             analyze_prediction(prediction)
-
-    def test_rejects_unbound_or_mismatched_conformal_artifact(self):
-        artifact = {"method": "lac_split_conformal", "alpha": .1, "quantile": .8,
-                    "class_names": ["Benign", "InSitu", "Invasive", "Normal"],
-                    "calibration_sample_count": 40,
-                    "calibration_status": "independent_labeled_calibration",
-                    "classifier_identity": inspect_checkpoint("bach/classifier.pkl")}
-        artifact["classifier_identity"]["classifier_sha256"] = "0" * 64
-        with self.assertRaisesRegex(ValueError, "hash does not match"):
-            analyze_prediction(self.prediction(), calibration_artifact=artifact,
-                               classifier_path="bach/classifier.pkl")
 
     def test_retrieval_embedding_is_512d_and_json_serializable(self):
         prediction = self.prediction()

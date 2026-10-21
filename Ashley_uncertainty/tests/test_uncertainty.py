@@ -1,6 +1,6 @@
 import unittest
 
-from uncertainty import assess_prediction, assess_probabilities, assess_uncertainty
+from Ashley_uncertainty.uncertainty import assess_prediction, assess_probabilities, assess_uncertainty
 
 
 class AssessUncertaintyTests(unittest.TestCase):

@@ -1,7 +1,0 @@
-# SIMULATED DATA ONLY. Fake examples for checking CSV annotation; not model results.
-# Demo threshold 0.70 is provisional and only for this example.
-image_id,predicted_label,confidence
-demo_01,normal,0.45
-demo_02,tumor,0.70
-demo_03,normal,0.69
-demo_04,tumor,0.91

@@ -1,27 +1,12 @@
-"""Stable classifier + uncertainty + conformal integration interface."""
+"""Stable classifier uncertainty and review-queue interface."""
 
 from __future__ import annotations
 
-import json
-import math
 from collections.abc import Iterable
 from pathlib import Path
 
-from experiments.uncertainty.conformal import assess_conformal_prediction
-from model_identity import EXPECTED_CLASSES, verify_calibration_binding
-from uncertainty import assess_probabilities
-
-
-def load_calibration_artifact(path):
-    """Load a locally generated conformal artifact, including JSON Infinity."""
-    artifact_path = Path(path)
-    if not artifact_path.is_file():
-        raise FileNotFoundError(f"Conformal calibration artifact not found: {artifact_path}")
-    with artifact_path.open(encoding="utf-8") as input_file:
-        artifact = json.load(input_file)
-    if artifact.get("quantile") == "Infinity":
-        artifact["quantile"] = math.inf
-    return artifact
+from .model_identity import EXPECTED_CLASSES
+from .uncertainty import assess_probabilities
 
 
 def analyze_prediction(
@@ -31,8 +16,6 @@ def analyze_prediction(
     confidence_threshold=0.70,
     entropy_threshold=None,
     margin_threshold=None,
-    calibration_artifact=None,
-    classifier_path=None,
 ):
     """Enrich Mayumi's prediction dictionary without running image inference."""
     if not isinstance(prediction, dict):
@@ -49,6 +32,8 @@ def analyze_prediction(
     if reported != metrics["predicted_class"]:
         raise ValueError("predicted_class does not match the maximum probability")
 
+    # No independently calibrated conformal artifact exists for this exact
+    # checkpoint. Keep an explicit status for UI backward compatibility.
     conformal_output = {
         "available": False,
         "prediction_set": None,
@@ -57,24 +42,6 @@ def analyze_prediction(
         "reason": "Independent labeled calibration data required",
     }
     reasons = list(metrics["review_reasons"])
-    if calibration_artifact is not None:
-        if classifier_path is None:
-            raise ValueError(
-                "classifier_path is required to verify a conformal artifact"
-            )
-        verify_calibration_binding(calibration_artifact, classifier_path)
-        conformal = assess_conformal_prediction(prediction, calibration_artifact)
-        prediction_set = conformal["prediction_set"]
-        conformal_output = {
-            "available": True,
-            "prediction_set": prediction_set,
-            "set_size": len(prediction_set),
-            "alpha": float(calibration_artifact["alpha"]),
-            "reason": None,
-        }
-        if len(prediction_set) != 1:
-            reasons.append("Multiple labels in conformal prediction set" if prediction_set else
-                           "Empty conformal prediction set")
 
     return {
         "image_id": image_id if image_id is not None else prediction.get("image_id"),
@@ -108,7 +75,6 @@ def analyze_image(
     confidence_threshold=0.70,
     entropy_threshold=None,
     margin_threshold=None,
-    calibration_artifact=None,
     predictor=None,
 ):
     """Run Mayumi's classifier and return UI/retrieval-ready analysis.
@@ -122,7 +88,11 @@ def analyze_image(
         from bach.predict_image import predict_image
 
         predictor = predict_image
-    canonical_model_path = Path(model_path) if model_path is not None else Path(__file__).parent / "bach" / "classifier.pkl"
+    canonical_model_path = (
+        Path(model_path)
+        if model_path is not None
+        else Path(__file__).resolve().parent.parent / "bach" / "classifier.pkl"
+    )
     kwargs = {"model_path": canonical_model_path} if using_builtin_predictor or model_path is not None else {}
     if device is not None:
         kwargs["device"] = device
@@ -133,8 +103,6 @@ def analyze_image(
         confidence_threshold=confidence_threshold,
         entropy_threshold=entropy_threshold,
         margin_threshold=margin_threshold,
-        calibration_artifact=calibration_artifact,
-        classifier_path=canonical_model_path,
     )
 
 

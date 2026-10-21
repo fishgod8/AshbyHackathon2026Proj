@@ -10,8 +10,8 @@ from pathlib import Path
 
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-from model_identity import inspect_checkpoint, sha256_file
-from uncertainty import assess_probabilities
+from .model_identity import inspect_checkpoint, sha256_file
+from .uncertainty import assess_probabilities
 
 
 CANDIDATES = {
