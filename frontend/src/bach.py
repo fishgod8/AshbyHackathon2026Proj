@@ -1,21 +1,25 @@
 """BACH (ICIAR 2018 breast histology) integration: the team's real modules end to end.
 
 Per microscopy image (BACH photos are 2048x1536 H&E; any size from 224x224 is accepted, as in
-Mayumi's predict_image.py), exactly as Mayumi's prepare_bach.py / predict_image.py (team repo, branch mayumi-model):
+Mayumi's predict_image.py), with Mayumi's patching (prepare_bach.py, team repo, branch mayumi-model):
   12 patches of 224x224 on a 3x4 grid -> QuiltNet (official openclip adapter: encode_image + L2 norm)
-  -> mean of the 12 -> Mayumi's classifier.pkl (StandardScaler + LogisticRegression) -> 4 class probabilities
+  -> Mayumi's single-patch classifier (patch_classifier.pkl, her final model, 10/19) on each patch
+  -> mean of the 12 probability vectors (her aggregation: BACH val 92.5%, test 87.5%; reproduced exactly)
+  (her earlier photo-level classifier.pkl on the mean embedding is kept for the Evidence comparison)
   -> two review checks by Ashley (vendored verbatim in src/team/):
        confidence: assess_uncertainty(probabilities, threshold)            (branch ashley-uncertainty)
        reference support: cosine distance to the 5th nearest training image,
        flagged above the 95th percentile of validation images              (main, ashley_review/)
   -> centered cosine top-k over the reference gallery (Felix's retrieval not delivered yet: CenteredRetriever)
 
-`build` assembles a UI data folder (cases.json, meta.json, evidence.json, gallery.csv, classifier.pkl,
+`build` assembles a UI data folder (cases.json, meta.json, evidence.json, gallery.csv, classifier.pkl, patch_classifier.pkl,
 images/, examples/, support/ = Ashley's reference index and gate in her file formats). Photos come from the BACH Zenodo zip by range request (only the ones needed), are
 checked against Mayumi's embeddings, and are stored as display JPEGs (full image, no cropping).
 
 Example:
-    python -m src.bach build --out ui/data_bach --per-class 10 \
+    python -m src.patches build --raw data/bach_raw --out ui/data_bach   # patch embeddings, needed first
+    python -m src.bach build --out ui/data_bach --per-class 80 \
+        --patch-model data/mayumi_patch_model/bach_single_patch_classifier.pkl \
         --test-zip ~/Downloads/ICIAR2018_BACH_Challenge_TestDataset.zip
 """
 
@@ -54,10 +58,12 @@ QUILT_DIM = 512
 MIN_SIDE = 224  # one patch; Mayumi's predict_image.py accepts any size from here (mayumi-model @ 7f630c3)
 CLASS_NAMES = {"Normal": "Normal tissue", "Benign": "Benign lesion",
                "InSitu": "In situ carcinoma", "Invasive": "Invasive carcinoma"}
-# Confidence threshold, raised from Ashley's provisional 0.7 (agreed with her 10/18): the lowest value that sends
-# every validation error to review on Mayumi's 40 validation images (0.7 caught 6 of 8, 0.9 caught 8 of 8).
+# Confidence thresholds, each chosen on Mayumi's 40 validation images as the lowest round value that sends every
+# validation error to review. Photo-level model: 0.9 (0.7 caught 6 of 8 errors). Single-patch model, mean of 12
+# patches: Ashley's own 0.7 (errors at 41%, 46%, 61%; all 3 caught). Averaging 12 patches gives less extreme
+# probabilities, so the same threshold means something different for the two models.
 DEFAULT_THRESHOLD = 0.9
-ASHLEY_FIRST_THRESHOLD = 0.7  # kept for the Evidence comparison
+PATCH_MODEL_THRESHOLD = 0.7
 SUPPORT_PERCENTILE = 95  # Ashley's gate rule: flag if reference_distance > validation 95th percentile
 
 # Ashley's reference-support module fixes EMBEDDING_DIMENSION = 1024 (MUSK). QuiltNet gives 512, so we set the
@@ -97,8 +103,8 @@ class QuiltEmbedder:
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(QUILTNET)
         self.model = self.model.to(device).eval()
 
-    def image_embedding(self, image: Image.Image) -> np.ndarray:
-        """Mean of the L2-normalized patch embeddings (what Mayumi's classifier was trained on)."""
+    def patch_embeddings(self, image: Image.Image) -> np.ndarray:
+        """L2-normalized embeddings of Mayumi's 12 patches, one row each."""
         img = image.convert("RGB")
         if min(img.size) < MIN_SIDE:
             raise ValueError(f"Image must be at least {MIN_SIDE} × {MIN_SIDE} pixels; got {img.size[0]} × {img.size[1]}.")
@@ -106,7 +112,11 @@ class QuiltEmbedder:
         with self.torch.no_grad():
             emb = self.model.encode_image(batch)
             emb = emb / emb.norm(dim=-1, keepdim=True)
-        return emb.float().cpu().numpy().mean(axis=0)
+        return emb.float().cpu().numpy()
+
+    def image_embedding(self, image: Image.Image) -> np.ndarray:
+        """Mean of the patch embeddings (photo-level embedding: retrieval, Ashley's gate, the photo model)."""
+        return self.patch_embeddings(image).mean(axis=0)
 
 
 # ---- Team modules behind small adapters ----
@@ -118,21 +128,24 @@ class MayumiClassifier:
         saved = joblib.load(path)
         self.model = saved["model"]
         self.classes = [str(c) for c in saved["classes"]]
+        self.per_patch = "patch" in str(saved.get("input", ""))  # Mayumi's single-patch model says so in its pickle
 
     def predict(self, emb: np.ndarray) -> tuple[list[str], np.ndarray]:
-        return self.classes, self.model.predict_proba(emb[None, :])[0]
+        """One embedding -> its probabilities; several rows (patches of one image) -> mean of their probabilities."""
+        return self.classes, self.model.predict_proba(np.atleast_2d(emb)).mean(axis=0)
 
 
 def ashley_flag(probs: np.ndarray, classes: list[str], threshold: float) -> dict:
     confidence, needs_review = assess_uncertainty([float(p) for p in probs], threshold)
     first, second = np.argsort(probs)[::-1][:2]
     top, runner_up = classes[first], classes[second]
+    shown = np.round(probs, 3)  # as stored in cases.json, so the reason quotes the same percentages the UI shows
     if not needs_review:
         return {"risk": "confident", "candidate_set": [top],
-                "reason": f"{top} scores {confidence:.0%}, at or above the review threshold of {threshold:.0%}."}
+                "reason": f"{top} scores {shown[first]:.0%}, at or above the review threshold of {threshold:.0%}."}
     return {"risk": "review", "candidate_set": [top, runner_up],
-            "reason": (f"{top} ({confidence:.0%}) is below the review threshold of {threshold:.0%}; "
-                       f"runner-up {runner_up} ({probs[second]:.0%}).")}
+            "reason": (f"{top} ({shown[first]:.0%}) is below the review threshold of {threshold:.0%}; "
+                       f"runner-up {runner_up} ({shown[second]:.0%}).")}
 
 
 def support_check(emb: np.ndarray, gate: SupportGate, image_id: str | None = None) -> dict:
@@ -154,9 +167,13 @@ def ordinal(n: int) -> str:
 
 
 def analyze_embedding(emb: np.ndarray, clf: MayumiClassifier, retriever: CenteredRetriever, threshold: float,
-                      gate: SupportGate | None = None, image_id: str | None = None) -> dict:
-    """One image embedding -> the result format the UI reads (image paths as the gallery stores them)."""
-    classes, probs = clf.predict(emb)  # the classifier sees the raw mean embedding, as in training
+                      gate: SupportGate | None = None, image_id: str | None = None,
+                      patches: np.ndarray | None = None) -> dict:
+    """One image (mean embedding, plus its patch embeddings for a single-patch model) -> the result format the UI
+    reads (image paths as the gallery stores them)."""
+    if clf.per_patch and patches is None:
+        raise ValueError("The single-patch classifier needs the patch embeddings of the image.")
+    classes, probs = clf.predict(patches if clf.per_patch else emb)  # each model sees what it was trained on
     flag = ashley_flag(probs, classes, threshold)
     support = support_check(emb, gate, image_id) if gate else None
     if support:  # either check sends the image to review; flagged reasons first
@@ -278,15 +295,17 @@ class BachLiveAnalyzer:
     def __init__(self, data_dir: Path, device: str = "cpu") -> None:
         meta = json.loads((data_dir / "meta.json").read_text())
         self.threshold = meta["bach"]["threshold"]
-        self.clf = MayumiClassifier(data_dir / "classifier.pkl")
+        patch_model = data_dir / "patch_classifier.pkl"
+        self.clf = MayumiClassifier(patch_model if patch_model.exists() else data_dir / "classifier.pkl")
         self.retriever = load_gallery(data_dir)
         self.gate = SupportGate(data_dir / "support") if (data_dir / "support").exists() else None
         self.embedder = QuiltEmbedder(device)
         self.data_dir = data_dir
 
     def analyze(self, image: Image.Image) -> dict:
-        result = analyze_embedding(self.embedder.image_embedding(image), self.clf, self.retriever, self.threshold,
-                                   self.gate)
+        patches = self.embedder.patch_embeddings(image)
+        result = analyze_embedding(patches.mean(axis=0), self.clf, self.retriever, self.threshold, self.gate,
+                                   patches=patches)
         # Gallery paths are relative to the data folder; the UI localizes absolute paths.
         fix = lambda refs: [{**r, "image": str(self.data_dir / r["image"])} for r in refs]  # noqa: E731
         return {**result, "similar_cases": fix(result["similar_cases"]), "contrast_cases": fix(result["contrast_cases"]),
@@ -307,15 +326,31 @@ def save_display(img: Image.Image, dest: Path, max_width: int | None, quality: i
     img.save(dest, quality=quality)
 
 
-def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path | None, n_examples: int,
-          verify: bool, n_robust: int = 12) -> None:
+def library_patches(out: Path, emb_df: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Patch embeddings per photo from the patch library (src.patches), checked against Mayumi's photo embeddings."""
+    index = pd.read_csv(out / "patches/index.csv")
+    emb = np.load(out / "patches/embeddings.npy")
+    patches = {i: emb[g.sort_values("patch").index.to_numpy()] for i, g in index.groupby("image_id")}
+    cos = [float(patches[r.image_id].mean(0) @ r.vec / np.linalg.norm(patches[r.image_id].mean(0)) / np.linalg.norm(r.vec))
+           for r in emb_df[emb_df.split == "test"].itertuples()]
+    print(f"patch library: {len(patches)} photos; test photo mean vs Mayumi's embedding, cosine min {min(cos):.6f}")
+    return patches
+
+
+def build(out: Path, per_class: int, threshold: float | None, seed: int, test_zip: Path | None, n_examples: int,
+          verify: bool, n_robust: int = 12, patch_model: Path | None = None) -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "images").mkdir(exist_ok=True)
     commit = subprocess.run(["git", "-C", str(TEAM_REPO), "rev-parse", "--short", MAYUMI_BRANCH],
                             check=True, capture_output=True, text=True).stdout.strip()
     (out / "classifier.pkl").write_bytes(git_show(f"{MAYUMI_BRANCH}:bach/classifier.pkl"))
+    if patch_model:
+        (out / "patch_classifier.pkl").write_bytes(patch_model.read_bytes())
+    if threshold is None:
+        threshold = PATCH_MODEL_THRESHOLD if patch_model else DEFAULT_THRESHOLD
     emb_df = pd.read_csv(io.BytesIO(git_show(f"{MAYUMI_BRANCH}:bach/image_embeddings.csv")))
     emb_df["vec"] = emb_df.embedding.map(lambda s: np.asarray(ast.literal_eval(s), dtype=np.float32))
+    patches = library_patches(out, emb_df) if patch_model else {}
 
     rng = random.Random(seed)
     gallery = pd.concat([
@@ -357,20 +392,22 @@ def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path
 
     train = np.stack(emb_df[emb_df.split == "train"].vec)
     np.save(out / "embedding_mean.npy", (train / np.linalg.norm(train, axis=1, keepdims=True)).mean(axis=0))
-    clf = MayumiClassifier(out / "classifier.pkl")
+    photo_clf = MayumiClassifier(out / "classifier.pkl")
+    clf = MayumiClassifier(out / "patch_classifier.pkl") if patch_model else photo_clf
     retriever = load_gallery(out)
     gate = build_support_gate(emb_df, out, commit)
     order = list(tests.index)
     random.Random(seed).shuffle(order)  # case ids must not reveal the class (file names do: b/is/iv/n)
-    cases, conf_only, first_threshold = [], [], []  # same cases: confidence check alone; Ashley's first 0.7
+    cases, conf_only, earlier = [], [], []  # same cases: confidence check alone; earlier photo model at its 0.9
     for k, idx in enumerate(order, start=1):
         row = tests.loc[idx]
+        p = patches.get(row.image_id)
         case = {"case_id": f"case_{k:03d}", "image": f"images/{Path(row.image_id).stem}.jpg",
                 "true_label": row.label, "source_image": row.image_id}
-        cases.append({**case, **analyze_embedding(row.vec, clf, retriever, threshold, gate, row.image_id)})
-        conf_only.append({**case, **analyze_embedding(row.vec, clf, retriever, threshold)})
-        first_threshold.append({**case, **analyze_embedding(row.vec, clf, retriever, ASHLEY_FIRST_THRESHOLD, gate,
-                                                             row.image_id)})
+        cases.append({**case, **analyze_embedding(row.vec, clf, retriever, threshold, gate, row.image_id, p)})
+        conf_only.append({**case, **analyze_embedding(row.vec, clf, retriever, threshold, patches=p)})
+        earlier.append({**case, **analyze_embedding(row.vec, photo_clf, retriever, DEFAULT_THRESHOLD, gate,
+                                                    row.image_id)})
 
     examples, robustness = [], None
     if test_zip:
@@ -392,8 +429,11 @@ def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path
     meta = {
         "source": "BACH breast histology · team models",
         "pipeline": "bach",
-        "dataset": "BACH (ICIAR 2018) microscopy images, 2048×1536 H&E",
-        "model": f"QuiltNet-B-32, mean of 12 patches → Mayumi's classifier (mayumi-model @ {commit})",
+        "dataset": "BACH breast tissue (ICIAR 2018): normal, benign, in situ or invasive",
+        "model": ("QuiltNet features + linear classifier, scored per 224 px patch" if patch_model
+                  else "QuiltNet features (mean of 12 patches) + linear classifier"),
+        "model_detail": (f"QuiltNet-B-32 → Mayumi's single-patch classifier on 12 patches, probabilities averaged"
+                         if patch_model else f"QuiltNet-B-32, mean of 12 patches → Mayumi's classifier (mayumi-model @ {commit})"),
         "classes": clf.classes,
         "class_names": {c: CLASS_NAMES.get(c, c) for c in clf.classes},
         "reference_noun": "images",
@@ -409,22 +449,24 @@ def build(out: Path, per_class: int, threshold: float, seed: int, test_zip: Path
     stats = case_stats(cases)
     n_ref, n_val = len(gate.index.image_ids), gate.config["validation_count"]
     evidence = {
-        "source": (f"Mayumi's held-out test images ({len(cases)}). Ashley's two review checks: confidence below "
-                   f"{threshold:.0%} (chosen on Mayumi's validation images) or an unfamiliar image. Real team models; "
-                   "small test set."),
+        "source": (f"{len(cases)} held-out test images. An image goes to a pathologist when the AI is less than "
+                   f"{threshold:.0%} sure (chosen on validation images) or the image is unlike the training images. "
+                   "Small test set."),
         "alpha": None,
         **stats,
         "risk_coverage": risk_coverage(cases),
-        "models_title": "Review threshold compared",
-        "models": [{"model": f"{ASHLEY_FIRST_THRESHOLD:.0%}, Ashley's first value", **case_stats(first_threshold)},
-                   {"model": f"{threshold:.0%}, chosen on validation images", **stats}],
+        "models_title": "Earlier and current model compared",
+        "models": [{"model": f"Earlier model, whole-photo embedding (review below {DEFAULT_THRESHOLD:.0%})",
+                    **case_stats(earlier)},
+                   {"model": f"Current model, patch by patch (review below {threshold:.0%})", **stats}],
         **({"robustness": robustness} if robustness else {}),
-        "split_note": (f"Test cases: {len(cases)} BACH images Mayumi held out (10 per class). BACH has no patient IDs, "
-                       "so her split is by image and results may be optimistic. Unfamiliar image: the "
-                       f"{ordinal(gate.config['k'])} closest of her {n_ref} training images is farther than for "
-                       f"{gate.config['percentile']}% of her {n_val} validation images (limit "
-                       f"{gate.config['threshold']:.3f}). Reference gallery shown on screen: "
-                       f"{len(gallery)} of the {n_ref} training images ({per_class} per class)."),
+        "split_note": (f"Test cases: {len(cases)} BACH images held out from training (10 per class). BACH has no "
+                       "patient IDs, so the split is by image and results may be optimistic. Unfamiliar image: the "
+                       f"{ordinal(gate.config['k'])} closest of the {n_ref} training images is farther than for "
+                       f"{gate.config['percentile']}% of the {n_val} validation images (limit "
+                       f"{gate.config['threshold']:.3f}). Reference images shown on screen: "
+                       + (f"all {n_ref} training images" if len(gallery) == n_ref else f"{len(gallery)} of the {n_ref} training images")
+                       + f" ({per_class} per class)."),
     }
     steps = REPO / "ui/next_steps_bach.json"  # suggested next step per candidate pair (draft until a pathologist reviews it)
     if steps.exists():
@@ -460,7 +502,8 @@ def input_robustness(tz: zipfile.ZipFile, photos: list[str], embedder: QuiltEmbe
     for name in photos:
         img = Image.open(io.BytesIO(tz.read(name))).convert("RGB")
         for v, change in variants.items():
-            results[v].append(analyze_embedding(embedder.image_embedding(change(img)), clf, retriever, threshold, gate))
+            p = embedder.patch_embeddings(change(img))
+            results[v].append(analyze_embedding(p.mean(axis=0), clf, retriever, threshold, gate, patches=p))
     base = [r["prediction"] for r in results["Original photo (lossless TIFF)"]]
     rows = [{"input": v,
              "changed": sum(r["prediction"] != b for r, b in zip(rs, base)),
@@ -479,13 +522,16 @@ def main() -> None:
     b = sub.add_parser("build")
     b.add_argument("--out", type=Path, default=REPO / "ui/data_bach")
     b.add_argument("--per-class", type=int, default=10, help="training images per class in the reference gallery")
-    b.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
+    b.add_argument("--threshold", type=float, default=None,
+                   help=f"default {PATCH_MODEL_THRESHOLD} with --patch-model, else {DEFAULT_THRESHOLD}")
+    b.add_argument("--patch-model", type=Path, default=None, help="Mayumi's single-patch classifier (.pkl)")
     b.add_argument("--seed", type=int, default=0)
     b.add_argument("--test-zip", type=Path, default=None, help="BACH challenge test zip, for Lookup examples")
     b.add_argument("--examples", type=int, default=6)
     b.add_argument("--no-verify", action="store_true", help="skip re-embedding photos to check against Mayumi's")
     args = ap.parse_args()
-    build(args.out, args.per_class, args.threshold, args.seed, args.test_zip, args.examples, not args.no_verify)
+    build(args.out, args.per_class, args.threshold, args.seed, args.test_zip, args.examples, not args.no_verify,
+          patch_model=args.patch_model)
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ ATTRIBUTION = (
     'Images: BreakHis (Spanhol et al., IEEE Trans Biomed Eng 2016; '
     '<a href="https://web.inf.ufpr.br/vri/databases/breast-cancer-histopathological-database-breakhis/" '
     'target="_blank" rel="noopener">UFPR VRI</a>, non-commercial research use). Embeddings: QuiltNet-B-32. '
-    "Classifier: temporary, pending the team's model. Literature: PubMed (NCBI). Research demo; not for clinical use."
+    "Literature: PubMed (NCBI). Research demo; not for clinical use."
 )
 
 
@@ -170,11 +170,12 @@ def build(raw: Path, emb_dir: Path, out: Path, threshold: float, n_examples: int
     n_ref, n_val = len(gate.index.image_ids), gate.config["validation_count"]
     n_pat = img.groupby("split").patient.nunique().to_dict()
     meta = {
-        "source": "BreakHis breast histology · temporary classifier",
+        "source": "BreakHis breast histology",
         "pipeline": "breakhis",
-        "dataset": "BreakHis, 700×460 H&E, 40X to 400X, 82 patients",
+        "dataset": f"BreakHis breast tumors ({img.patient.nunique()} patients): benign or malignant",
         "dataset_label": "BreakHis",
-        "model": f"QuiltNet-B-32, mean of 6 patches → temporary logistic regression (C={C})",
+        "model": f"QuiltNet features + linear classifier, trained on {n_pat.get('train')} patients",
+        "model_detail": f"QuiltNet-B-32, mean of 6 patches → logistic regression (C={C}), Mayumi's BACH recipe",
         "classes": clf.classes,
         "class_names": {c: CLASS_NAMES.get(c, c) for c in clf.classes},
         "reference_noun": "images",
@@ -189,8 +190,9 @@ def build(raw: Path, emb_dir: Path, out: Path, threshold: float, n_examples: int
     }
     worst = by_patient[0]
     evidence = {
-        "source": (f"Mayumi's BreakHis test patients ({n_pat.get('test')} patients, {len(cases)} images), never seen "
-                   f"in training. Temporary classifier; Ashley's checks at {threshold:.0%} confidence."),
+        "source": (f"BreakHis test patients ({n_pat.get('test')} patients, {len(cases)} images), never seen in "
+                   f"training. An image goes to a pathologist when the AI is less than {threshold:.0%} sure or the "
+                   "image is unlike the training images."),
         "alpha": None, **stats,
         "risk_coverage": risk_coverage(cases),
         "models_title": "Review checks compared",
@@ -202,9 +204,9 @@ def build(raw: Path, emb_dir: Path, out: Path, threshold: float, n_examples: int
         "by_patient_note": (f"Errors come in whole patients: {worst['subtype'].lower()} patient {worst['patient']} "
                             f"({worst['truth'].lower()}) was wrong on {worst['wrong']} of {worst['n']} images at a mean "
                             f"confidence of {worst['mean_confidence']:.0%}. Per-image confidence cannot catch this."),
-        "split_note": (f"Split by patient (Mayumi): {n_pat.get('train')} training, {n_pat.get('val')} validation and "
-                       f"{n_pat.get('test')} test patients; no patient appears in two splits. Classifier: temporary, "
-                       f"Mayumi's BACH recipe (C picked on validation patients, accuracy {val_acc:.1%}). Unfamiliar "
+        "split_note": (f"Split by patient: {n_pat.get('train')} training, {n_pat.get('val')} validation and "
+                       f"{n_pat.get('test')} test patients; no patient appears in two splits. Classifier: the BACH "
+                       f"recipe (regularization picked on validation patients, accuracy {val_acc:.1%}). Unfamiliar "
                        f"image: the {ordinal(gate.config['k'])} closest of {n_ref} training images is farther than "
                        f"for {gate.config['percentile']}% of {n_val} validation images (limit "
                        f"{gate.config['threshold']:.3f}). Reference gallery: all {len(gal)} training images."),

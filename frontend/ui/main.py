@@ -78,7 +78,8 @@ SITE_CSS = """
 with gr.Blocks(title="Pathology Assistant") as site:
     with gr.Row(elem_classes="site-header", equal_height=False):
         gr.HTML('<div><h1 class="app-title">Pathology Assistant</h1>'
-                '<p class="app-subtitle">AI pre-read and reference lookup for H&amp;E histology</p></div>',
+                '<p class="app-subtitle">Shows where to look on breast H&amp;E tissue, compares it with confirmed '
+                'examples, and says when a pathologist should check.</p></div>',
                 elem_classes="flush", elem_id="site-title")
         switch = gr.Radio(labels, value=labels[0], show_label=False, container=False, elem_id="dataset-switch",
                           scale=0)
@@ -96,7 +97,7 @@ def launch_options() -> dict:
     """Theme, CSS, JS and file access for this page; shared by local launch and deploy/modal_app.py."""
     first = apps[0]
     return dict(theme=first.THEME, css=first.CSS + SITE_CSS + SWITCH_CSS, js=first.JS, footer_links=[],
-                allowed_paths=[p for a in apps for p in (str(a.DATA_DIR), str(a.LIVE_CACHE))])
+                favicon_path=str(HERE / "assets/favicon.png"), allowed_paths=[p for a in apps for p in (str(a.DATA_DIR), str(a.LIVE_CACHE))])
 
 
 if __name__ == "__main__":

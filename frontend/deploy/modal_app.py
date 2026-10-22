@@ -42,6 +42,7 @@ image = (
     .add_local_dir(ROOT / "src", f"{APP_DIR}/src", ignore=["**/__pycache__/**"])
     .add_local_file(ROOT / "ui/app.py", f"{APP_DIR}/ui/app.py")
     .add_local_file(ROOT / "ui/main.py", f"{APP_DIR}/ui/main.py")
+    .add_local_file(ROOT / "ui/assets/favicon.png", f"{APP_DIR}/ui/assets/favicon.png")
 )
 for name in DATA:  # data last: changing it doesn't rebuild the layers above
     image = image.add_local_dir(ROOT / "ui" / name, f"{APP_DIR}/ui/{name}", ignore=["decisions.json"])

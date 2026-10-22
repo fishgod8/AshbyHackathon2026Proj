@@ -20,6 +20,8 @@ with sync_playwright() as p:
     b = p.chromium.launch(); page = b.new_page(viewport={"width": 1400, "height": 1000})
     page.goto("http://127.0.0.1:7860", wait_until="load"); page.wait_for_selector("#dataset-switch"); time.sleep(2)
     out = {}
+    out["bach_slides"] = page.evaluate(INVENTORY)
+    page.locator("button[role=tab]:visible", has_text="Lookup").click(); time.sleep(1.5)  # Slide view opens first
     page.locator(".gallery-item:visible").nth(1).click(); time.sleep(1.5)
     page.locator("button:visible", has_text="Look up").click(); page.wait_for_function(JS_DONE, timeout=180000); time.sleep(1.5)
     page.locator(".refs-fold > summary:visible").click(); page.locator(".label-wrap:visible").last.click(); time.sleep(1)

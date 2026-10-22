@@ -135,7 +135,7 @@ def slide_validation_sentence(rows):
     text = f"On the unseen slides the map was weaker ({worst['slide']}: {worst['auc']:.2f})"
     better = [r for r in unseen if r.get("auc_photo_model", 0) > r["auc"]]
     if better:
-        text += (", and Mayumi's photo-level model scored higher there (" +
+        text += (", and the earlier whole-photo model scored higher there (" +
                  ", ".join(f"{r['slide']} {r['auc_photo_model']:.2f}" for r in better) + ")")
     return text + ": a first attempt at where to look, not a detector."
 
@@ -736,14 +736,15 @@ def sv_show(choice, layer):
 
 def sv_upload(file, layer, state):
     if file is None:
-        return (gr.skip(),) * 8
+        return (gr.skip(),) * 9
     img = PILImage.open(file).convert("RGB")
     if min(img.size) < 224:
         gr.Warning("The photo must be at least 224 × 224 pixels.")
-        return (gr.skip(),) * 8
+        return (gr.skip(),) * 9
     choice = f"Your photo ({img.width}×{img.height})"
     _SV_CACHE[choice] = sv_photo_entry(img)
-    return sv_open(choice, layer, _SV_CACHE[choice])
+    # The source menu names what is on screen, so it does not keep saying the slide shown before
+    return (*sv_open(choice, layer, _SV_CACHE[choice]), gr.Dropdown(choices=[*sv_choices(), choice], value=choice))
 
 
 def sv_relayer(layer, state):
@@ -844,6 +845,7 @@ def model_table(models):
     return pd.DataFrame([
         {
             "Setting": m["model"],
+            "Right overall": pct(m["accuracy"]),
             "Sent to a pathologist": pct(m["review_rate"], 0),
             "Wrong among the rest": pct(m["error_rate_confident"]),
         }
@@ -1273,6 +1275,7 @@ CSS = """
 #sv-upload { white-space:nowrap; min-width:max-content !important; flex:0 0 auto !important; color:var(--ink) !important;
              border:1px solid var(--line) !important; background:var(--surface) !important; border-radius:8px !important; }
 #sv-upload:hover { background:var(--hover) !important; }
+@media (max-width: 640px) { .sv-controls { flex-wrap:wrap !important; } #sv-src { flex-basis:100% !important; } }
 #sv-image img { width:100% !important; height:auto !important; border-radius:var(--radius); cursor:crosshair; }
 #sv-image, #sv-patch { background:transparent !important; border:none !important; box-shadow:none !important; }
 #sv-patch img { width:min(100%, 280px) !important; height:auto !important; border-radius:var(--radius); }
@@ -1474,8 +1477,10 @@ with gr.Blocks(title="Pathology Assistant") as demo:
                                             elem_id="sv-sim")
                 sv_state = gr.State({"choice": first, "sel": None})
             sv_outputs = [sv_img, sv_sum, sv_state, sv_patch, sv_verdict, sv_why, sv_sim, sv_lay]
-            sv_src.change(fn=sv_show, inputs=[sv_src, sv_lay], outputs=sv_outputs, api_visibility="private")
-            sv_up.upload(fn=sv_upload, inputs=[sv_up, sv_lay, sv_state], outputs=sv_outputs, api_visibility="private")
+            # .input: only a pick by the user; an upload sets the menu itself
+            sv_src.input(fn=sv_show, inputs=[sv_src, sv_lay], outputs=sv_outputs, api_visibility="private")
+            sv_up.upload(fn=sv_upload, inputs=[sv_up, sv_lay, sv_state], outputs=[*sv_outputs, sv_src],
+                         api_visibility="private")
             sv_lay.input(fn=sv_relayer, inputs=[sv_lay, sv_state], outputs=[sv_img, sv_sum], api_visibility="private")
             sv_img.select(fn=sv_click, inputs=[sv_lay, sv_state],
                           outputs=[sv_img, sv_state, sv_patch, sv_verdict, sv_why, sv_sim], api_visibility="private")
@@ -1590,5 +1595,6 @@ with gr.Blocks(title="Pathology Assistant") as demo:
 if __name__ == "__main__":
     demo.launch(
         theme=THEME, css=CSS, js=JS, footer_links=[], share=args.share,
+        favicon_path=str(Path(__file__).resolve().parent / "assets/favicon.png"),
         allowed_paths=[str(DATA_DIR), str(LIVE_CACHE)],
     )

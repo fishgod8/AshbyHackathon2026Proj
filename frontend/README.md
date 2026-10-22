@@ -7,9 +7,10 @@ A Gradio workbench that runs the team's modules end to end on BACH breast histol
 
 ```
 H&E image (any size from 224 x 224; BACH photos are 2048 x 1536)
- -> Mayumi: 12 patches of 224 on a 3x4 grid -> QuiltNet-B-32 -> mean -> classifier.pkl -> 4 class probabilities
+ -> Mayumi: 12 patches of 224 on a 3x4 grid -> QuiltNet-B-32 -> her single-patch classifier on each patch
+    -> mean of the 12 probability vectors -> 4 class probabilities (her final model, 10/19)
  -> Ashley: two review checks
-      confidence below the threshold (assess_uncertainty; 0.9, chosen on validation)
+      confidence below the threshold (assess_uncertainty; 0.7, chosen on validation)
       unfamiliar image: cosine distance to the 5th nearest training image above the
       95th percentile of validation images (ashley_review gate)
  -> similar confirmed images: stub centered-cosine top-k (Felix's retrieval not delivered yet)
@@ -109,7 +110,9 @@ git fetch origin mayumi-model                       # the build reads Mayumi's a
 
 # Build the data folder: 40 test photos + the reference gallery fetched from Zenodo by range request
 # (--per-class 80 = all 320 training images, about 3.2 GB to download; --per-class 10 = about 0.74 GB)
+# Needs the patch library first (src.patches, see Slide view) and Mayumi's single-patch model file
 ui/.venv/bin/python -m src.bach build --out ui/data_bach --per-class 80 \
+    --patch-model /path/to/bach_single_patch_classifier.pkl \
     --test-zip /path/to/ICIAR2018_BACH_Challenge_TestDataset.zip
 
 # Optional: literature (PubMed), then AI screening (needs DEEPSEEK_API_KEY in frontend/.env, never committed)
@@ -128,14 +131,17 @@ earlier prototype on CRC-100K with stub models.
 
 ## Findings so far (for the team)
 
-- Mayumi's test set (40 images): accuracy 90%. Confidence threshold 0.9, raised from Ashley's provisional
-  0.7 (agreed with her): on the 40 validation images it is the lowest value that sends every error to review
-  (0.7: 6 of 8). Test: all 4 errors flagged, but 19 of 40 images go to review. Three test errors sit at
-  0.85 to 0.88 confidence, so no single confidence threshold flags them without flagging many correct images.
-- The unfamiliar-image check rarely fires on BACH test images (1 of 40) and caught none of those errors.
+- Final model (10/21): Mayumi's single-patch classifier, probabilities averaged over the 12 patches (her
+  aggregation; we reproduce her 92.5% validation and 87.5% test exactly). Averaging gives less extreme
+  probabilities, so the threshold was re-chosen the same way: the lowest round value that sends every
+  validation error to review is Ashley's own 0.7 (validation errors at 41%, 46%, 61%). Test (40 images):
+  accuracy 87.5%, 19 of 40 sent to review, all 5 errors among them, 0 wrong among the 21 the AI handles alone.
+- Her earlier photo-level model (mean embedding -> classifier.pkl) at its 0.9 threshold: accuracy 90%, also
+  19 of 40 to review and 0 wrong among the rest. Evidence shows both rows.
+- The unfamiliar-image check rarely fires on BACH test images (1 of 40; with the final model that one is an error).
   It does catch changed inputs: on 12 challenge test photos, an ordinary JPEG export changed the
-  suggestion for 3 and was flagged for all 12; half resolution changed 5 and was flagged for 11; a
-  colon tile (CRC-VAL-HE-7K) got "In situ carcinoma, 100%" and was flagged.
+  suggestion for 4 and was flagged for all 12; half resolution changed 7 and was flagged for 11 (final model); a
+  colon tile (CRC-VAL-HE-7K) got "In situ carcinoma, 100%" from the earlier model and was flagged.
 - Lookup examples are stored lossless (WebP) for that reason; the upload hint asks for PNG. An unfamiliar
   upload shows only the warning and what to do next: no class, no comparison images, no papers.
 - Raw cosine between these embeddings is always high (0.74 to 0.997; same class 0.919 vs different class
