@@ -93,11 +93,16 @@ with gr.Blocks(title="Pathology Assistant") as site:
     switch.change(fn=lambda chosen: [gr.Column(visible=chosen == label) for label in labels],
                   inputs=switch, outputs=columns, api_visibility="private")
 
+# Gradio serves the icon at /favicon.ico but adds no <link>, so browsers keep a cached copy of its default logo;
+# a versioned link makes them fetch ours.
+ICON_LINK = '<link rel="icon" type="image/png" href="/favicon.ico?v=2">'
+
+
 def launch_options() -> dict:
     """Theme, CSS, JS and file access for this page; shared by local launch and deploy/modal_app.py."""
     first = apps[0]
     return dict(theme=first.THEME, css=first.CSS + SITE_CSS + SWITCH_CSS, js=first.JS, footer_links=[],
-                favicon_path=str(HERE / "assets/favicon.png"), allowed_paths=[p for a in apps for p in (str(a.DATA_DIR), str(a.LIVE_CACHE))])
+                favicon_path=str(HERE / "assets/favicon.png"), head=ICON_LINK, allowed_paths=[p for a in apps for p in (str(a.DATA_DIR), str(a.LIVE_CACHE))])
 
 
 if __name__ == "__main__":

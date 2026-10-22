@@ -1596,5 +1596,6 @@ if __name__ == "__main__":
     demo.launch(
         theme=THEME, css=CSS, js=JS, footer_links=[], share=args.share,
         favicon_path=str(Path(__file__).resolve().parent / "assets/favicon.png"),
+        head='<link rel="icon" type="image/png" href="/favicon.ico?v=2">',
         allowed_paths=[str(DATA_DIR), str(LIVE_CACHE)],
     )
